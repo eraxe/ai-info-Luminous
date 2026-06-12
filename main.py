@@ -1,4 +1,4 @@
-# main.py
+# main.py  — EDIT MODE PATCH
 #!/usr/bin/env python3
 """
 NPC Character Viewer — Dark UI
@@ -12,7 +12,7 @@ import platform
 from datetime import datetime
 from pathlib import Path
 
-from jsonTemplate import TEMPLATES, TABS, TAG_CONFIG, KNOWN_KEYS
+from jsonTemplate import TEMPLATES, TABS, TAG_CONFIG, KNOWN_KEYS, RenderContext
 
 C = {
     "bg":        "#0d0f14",
@@ -262,6 +262,40 @@ def _atomic_write_json(path, data):
 
 
 # ─────────────────────────────────────────────
+# AUTOSAVE MANAGER
+# ─────────────────────────────────────────────
+
+class AutosaveManager:
+    def __init__(self, app):
+        self.app = app
+        self._timer = None
+
+    def mark_dirty(self):
+        if self._timer:
+            self.app.root.after_cancel(self._timer)
+        delay = self.app.settings.get("autosave_delay_ms", 1000)
+        self._timer = self.app.root.after(delay, self._flush)
+
+    def _flush(self):
+        if not self.app.current_file_path or not self.app.current_json_data:
+            return
+        self._timer = None
+        self._try_write(retries=3)
+
+    def _try_write(self, retries=3):
+        try:
+            _atomic_write_json(self.app.current_file_path, self.app.current_json_data)
+            self.app.status.set("Autosaved ✓", "ok")
+        except PermissionError:
+            if retries > 0:
+                self.app.root.after(200, lambda: self._try_write(retries - 1))
+            else:
+                self.app.status.set("Autosave failed — file locked", "error")
+        except Exception as e:
+            self.app.status.set(f"Autosave error: {e}", "error")
+
+
+# ─────────────────────────────────────────────
 # MAIN APPLICATION
 # ─────────────────────────────────────────────
 
@@ -297,21 +331,23 @@ class NPCViewerApp:
         self._tab_widgets = {}
         self._sidebar_items = {}
         self.settings = {
-            "auto_load_last": True,
-            "show_timestamps": True,
-            "compact_mode": False,
-            "ui_font_family": "Segoe UI",
-            "ui_font_size": 10,
-            "content_font_family": "Segoe UI",
-            "content_font_size": 11,
-            "code_font_family": "Consolas",
-            "code_font_size": 10,
-            "autosave_delay_ms": 1000,
+            "auto_load_last":     True,
+            "show_timestamps":    True,
+            "compact_mode":       False,
+            "ui_font_family":     "Segoe UI",
+            "ui_font_size":       10,
+            "content_font_family":"Segoe UI",
+            "content_font_size":  11,
+            "code_font_family":   "Consolas",
+            "code_font_size":     10,
+            "autosave_delay_ms":  1000,
+            "edit_mode_enabled":  False,
         }
         self.load_config()
         self.load_bookmarks()
         self._setup_styles()
         self._build_ui()
+        self.autosave = AutosaveManager(self)
         if self.settings.get("auto_load_last", True):
             self._auto_load_last_session()
 
@@ -486,6 +522,23 @@ class NPCViewerApp:
                                    font=(uf, us), anchor="w")
         self._stats_lbl.grid(row=1, column=1, sticky="ew", padx=(14, 0), pady=(0, 10))
 
+        # edit toolbar — col 2, hidden until edit_mode_enabled + file loaded
+        self._edit_toolbar = tk.Frame(self._header, bg=C["surface"])
+        self._edit_toolbar.grid(row=0, column=2, rowspan=2, sticky="ns", padx=(0, 16))
+        self._btn_inject_thought = FlatButton(
+            self._edit_toolbar, text="⊕ Thought",
+            command=self._open_inject_thought,
+            bg=C["surface2"], fg=C["accent3"],
+            font=(uf, us - 1), padx=10, pady=4)
+        self._btn_inject_msg = FlatButton(
+            self._edit_toolbar, text="⊕ Message",
+            command=self._open_inject_message,
+            bg=C["surface2"], fg=C["accent2"],
+            font=(uf, us - 1), padx=10, pady=4)
+        self._btn_inject_thought.pack(side=tk.LEFT, padx=2, pady=20)
+        self._btn_inject_msg.pack(side=tk.LEFT, padx=2, pady=20)
+        self._edit_toolbar.grid_remove()
+
         content = tk.Frame(self._main, bg=C["bg"])
         content.grid(row=1, column=0, sticky="nsew")
         content.columnconfigure(1, weight=1); content.rowconfigure(0, weight=1)
@@ -501,16 +554,46 @@ class NPCViewerApp:
             item.pack(fill=tk.X)
             self._sidebar_items[tab.key] = item
 
-        self._canvas = tk.Frame(content, bg=C["bg"])
-        self._canvas.grid(row=0, column=1, sticky="nsew")
+        # canvas wrapper: 2px amber stripe on top when edit mode active
+        self._canvas_wrapper = tk.Frame(content, bg=C["bg"])
+        self._canvas_wrapper.grid(row=0, column=1, sticky="nsew")
+        self._canvas_wrapper.columnconfigure(0, weight=1)
+        self._canvas_wrapper.rowconfigure(1, weight=1)
+
+        self._edit_stripe = tk.Frame(self._canvas_wrapper, bg=C["accent3"], height=2)
+        # not gridded until edit mode on
+
+        self._canvas = tk.Frame(self._canvas_wrapper, bg=C["bg"])
+        self._canvas.grid(row=1, column=0, sticky="nsew")
         self._canvas.columnconfigure(0, weight=1); self._canvas.rowconfigure(0, weight=1)
 
         self._build_tab_frames()
         self._switch_tab("ai")
+        self._update_edit_ui()
 
         self.status = StatusBar(self._main, uf, us)
         self.status.grid(row=2, column=0, sticky="ew")
         self.status.set("Ready — open a directory to begin", "info")
+
+    # ──────────────────────────────────────────
+    # EDIT MODE UI STATE
+    # ──────────────────────────────────────────
+
+    def _update_edit_ui(self):
+        enabled  = self.settings.get("edit_mode_enabled", False)
+        has_file = self.current_json_data is not None
+        if enabled:
+            self._edit_stripe.grid(row=0, column=0, sticky="ew")
+        else:
+            self._edit_stripe.grid_remove()
+        if enabled and has_file:
+            self._edit_toolbar.grid()
+        else:
+            self._edit_toolbar.grid_remove()
+
+    # ══════════════════════════════════════════
+    # TAB FRAMES
+    # ══════════════════════════════════════════
 
     def _build_tab_frames(self):
         c_ff = self.settings["content_font_family"]
@@ -558,7 +641,7 @@ class NPCViewerApp:
 
                 self._tab_widgets[tab.key] = {
                     "subtab_frames": subtab_frames,
-                    "subtab_btns": subtab_btns,
+                    "subtab_btns":   subtab_btns,
                 }
                 if tab.subtabs:
                     self._switch_subtab(tab.subtabs[0].key, subtab_frames, subtab_btns)
@@ -634,12 +717,11 @@ class NPCViewerApp:
         k_ff = self.settings["code_font_family"]
         k_fs = self.settings["code_font_size"]
         for tag_name, cfg in TAG_CONFIG.items():
-            delta = cfg.get("font_delta", 0)
-            weight = cfg.get("weight", "normal")
-            use_code = cfg.get("use_code_font", False)
+            delta     = cfg.get("font_delta", 0)
+            weight    = cfg.get("weight", "normal")
+            use_code  = cfg.get("use_code_font", False)
             font_family = k_ff if use_code else ff
-            font_size = (k_fs if use_code else c_fs) + delta
-
+            font_size   = (k_fs if use_code else c_fs) + delta
             style = "italic" if weight == "italic" else weight
             if style == "italic":
                 font_spec = (font_family, font_size, "italic")
@@ -647,7 +729,6 @@ class NPCViewerApp:
                 font_spec = (font_family, font_size, "bold")
             else:
                 font_spec = (font_family, font_size)
-
             kwargs = {"font": font_spec}
             fg_key = cfg.get("fg")
             if fg_key and fg_key in C:
@@ -659,6 +740,7 @@ class NPCViewerApp:
                 if attr in cfg:
                     kwargs[attr] = cfg[attr]
             widget.tag_configure(tag_name, **kwargs)
+        widget.tag_configure("edit_hover", background=C["surface3"])
 
     # ══════════════════════════════════════════
     # FILE / DATA OPERATIONS
@@ -680,8 +762,8 @@ class NPCViewerApp:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump({"last_directory": self.current_directory,
-                           "last_file": self.current_file_path,
-                           "settings": self.settings}, f, indent=2)
+                           "last_file":      self.current_file_path,
+                           "settings":       self.settings}, f, indent=2)
         except Exception:
             pass
 
@@ -760,6 +842,7 @@ class NPCViewerApp:
             self.current_file_path = filepath
             self.save_config()
             self._display_data()
+            self._update_edit_ui()
             self.status.set(f"Loaded: {os.path.basename(filepath)}", "ok")
         except Exception as e:
             self.status.set(f"Load error: {e}", "error")
@@ -779,6 +862,7 @@ class NPCViewerApp:
         if not self.current_json_data: return
         data = self.current_json_data
         c_ff = self.settings["content_font_family"]
+        edit = self.settings.get("edit_mode_enabled", False)
 
         self._name_lbl.config(text=f"◆ {data.get('Name', 'Unknown')}")
 
@@ -793,7 +877,7 @@ class NPCViewerApp:
               "neutral": "😐", "calm": "😌"}.get(mood.lower() if mood else "", "•")
         if mood: parts.append(f"{mi} {mood.capitalize()}")
         if data.get("IsInPlayerParty"): parts.append("In Party ⬟")
-        if data.get("IsWithPlayer"): parts.append("With Player")
+        if data.get("IsWithPlayer"):    parts.append("With Player")
         cs = data.get("CounterpartySocial", {})
         hero_social = cs.get("main_hero", {}) if isinstance(cs, dict) else {}
         trust = hero_social.get("trust_level")
@@ -819,10 +903,14 @@ class NPCViewerApp:
                     widget.config(state="normal")
                     widget.delete("1.0", tk.END)
                     self._cfg_tags(widget, c_ff)
+                    ctx = RenderContext() if edit else None
                     for tpl_key in st.templates:
                         tpl = TEMPLATES.get(tpl_key)
                         if tpl:
-                            tpl.render(widget, data)
+                            tpl.render(widget, data, ctx)
+                    if ctx is not None:
+                        widget._ctx = ctx
+                        self._bind_edit_clicks(widget)
                 continue
 
             td = self._tab_widgets.get(tab.key, {})
@@ -832,10 +920,14 @@ class NPCViewerApp:
             widget.config(state="normal")
             widget.delete("1.0", tk.END)
             self._cfg_tags(widget, c_ff)
+            ctx = RenderContext() if edit else None
             for tpl_key in tab.templates:
                 tpl = TEMPLATES.get(tpl_key)
                 if tpl:
-                    tpl.render(widget, data)
+                    tpl.render(widget, data, ctx)
+            if ctx is not None:
+                widget._ctx = ctx
+                self._bind_edit_clicks(widget)
 
     def _search_conversation(self):
         term = self.conv_search_var.get()
@@ -854,6 +946,325 @@ class NPCViewerApp:
             pos = end
 
     # ══════════════════════════════════════════
+    # EDIT MODE — KEYPATH PATCHING
+    # ══════════════════════════════════════════
+
+    def _patch_data(self, keypath: str, value):
+        parts = keypath.split(".")
+        obj = self.current_json_data
+        for p in parts[:-1]:
+            if isinstance(obj, list):
+                obj = obj[int(p)]
+            else:
+                obj = obj[p]
+        last = parts[-1]
+        if isinstance(obj, list):
+            obj[int(last)] = value
+        else:
+            obj[last] = value
+
+    def _bind_edit_clicks(self, widget):
+        widget.tag_configure("edit_hover", background=C["surface3"])
+
+        def on_motion(event):
+            idx = widget.index(f"@{event.x},{event.y}")
+            tags = widget.tag_names(idx)
+            edit_tags = [t for t in tags if t.startswith("edit_")]
+            if edit_tags:
+                widget.config(cursor="xterm")
+                widget.tag_remove("edit_hover", "1.0", tk.END)
+                tag_ranges = widget.tag_ranges(edit_tags[0])
+                if tag_ranges:
+                    widget.tag_add("edit_hover", tag_ranges[0], tag_ranges[1])
+            else:
+                widget.config(cursor="")
+                widget.tag_remove("edit_hover", "1.0", tk.END)
+
+        def on_click(event):
+            if not self.settings.get("edit_mode_enabled", False):
+                return
+            if self.current_json_data is None:
+                return
+            idx = widget.index(f"@{event.x},{event.y}")
+            tags = widget.tag_names(idx)
+            edit_tags = [t for t in tags if t.startswith("edit_")]
+            if not edit_tags:
+                return
+            tag_id = edit_tags[0]
+            ctx = getattr(widget, "_ctx", None)
+            if ctx is None:
+                return
+            keypath = ctx.tag_map.get(tag_id)
+            if keypath is None:
+                return
+            tag_ranges = widget.tag_ranges(tag_id)
+            if not tag_ranges:
+                return
+            start, end = tag_ranges[0], tag_ranges[1]
+            current_text = widget.get(start, end).strip()
+            bbox = widget.bbox(start)
+            if not bbox:
+                return
+            bx, by, bw, bh = bbox
+            self._spawn_edit_overlay(widget, keypath, current_text, bx, by, bw, bh)
+
+        widget.bind("<Motion>", on_motion)
+        widget.bind("<Button-1>", on_click)
+
+    def _spawn_edit_overlay(self, widget, keypath, current_text, bx, by, bw, bh):
+        widget.config(state="normal")
+        is_multi = "\n" in current_text
+
+        if is_multi:
+            overlay = tk.Text(
+                widget,
+                width=max(40, len(current_text.split("\n")[0]) + 4),
+                height=min(8, current_text.count("\n") + 2),
+                bg=C["surface3"], fg=C["fg"],
+                insertbackground=C["accent"],
+                highlightthickness=2, highlightcolor=C["accent"],
+                relief="flat", font=widget.cget("font")
+            )
+            overlay.insert("1.0", current_text)
+        else:
+            overlay = tk.Entry(
+                widget,
+                width=max(20, len(current_text) + 4),
+                bg=C["surface3"], fg=C["fg"],
+                insertbackground=C["accent"],
+                highlightthickness=2, highlightcolor=C["accent"],
+                relief="flat", font=widget.cget("font")
+            )
+            overlay.insert(0, current_text)
+            overlay.select_range(0, tk.END)
+
+        overlay.place(x=bx, y=by)
+        overlay.focus_set()
+        committed = [False]
+
+        def commit(_=None):
+            if committed[0]: return
+            committed[0] = True
+            new_val = overlay.get("1.0", "end-1c") if is_multi else overlay.get()
+            overlay.destroy()
+            widget.config(state="disabled")
+            try:
+                self._patch_data(keypath, new_val)
+                self.autosave.mark_dirty()
+                self._rerender_single_tab_for_keypath(keypath)
+                self.status.set(f"Edited: {keypath.split('.')[-1]}", "ok")
+            except Exception as e:
+                self.status.set(f"Edit error: {e}", "error")
+
+        def cancel(_=None):
+            if committed[0]: return
+            committed[0] = True
+            overlay.destroy()
+            widget.config(state="disabled")
+
+        if is_multi:
+            overlay.bind("<Escape>", cancel)
+            overlay.bind("<FocusOut>", commit)
+            overlay.bind("<Control-Return>", commit)
+        else:
+            overlay.bind("<Return>", commit)
+            overlay.bind("<Escape>", cancel)
+            overlay.bind("<FocusOut>", commit)
+
+    def _rerender_single_tab_for_keypath(self, keypath: str):
+        top_key = keypath.split(".")[0]
+        tab_key_map = {
+            "ConversationHistory": "conv",
+            "DialogueObservations": "conv",
+            "InternalThoughts": "internal",
+            "PendingAIResponse": "ai",
+            "LastDynamicResponse": "thoughts",
+            "PlayerRelation": "rel",
+            "CounterpartySocial": "rel",
+            "AIGeneratedPersonality": "personality",
+            "AIGeneratedBackstory": "personality",
+            "AIGeneratedSpeechQuirks": "personality",
+            "CharacterDescription": "personality",
+        }
+        tab_key = tab_key_map.get(top_key, "overview")
+        self._rerender_single_tab(tab_key)
+
+    def _rerender_single_tab(self, tab_key: str):
+        if not self.current_json_data:
+            return
+        data = self.current_json_data
+        c_ff = self.settings["content_font_family"]
+        edit = self.settings.get("edit_mode_enabled", False)
+
+        tab_def = next((t for t in TABS if t.key == tab_key), None)
+        if tab_def is None:
+            return
+
+        if tab_def.subtabs:
+            td = self._tab_widgets.get(tab_key, {})
+            subtab_frames = td.get("subtab_frames", {})
+            for st in tab_def.subtabs:
+                if st.key not in subtab_frames:
+                    continue
+                _, widget = subtab_frames[st.key]
+                widget.config(state="normal")
+                widget.delete("1.0", tk.END)
+                self._cfg_tags(widget, c_ff)
+                ctx = RenderContext() if edit else None
+                for tpl_key in st.templates:
+                    tpl = TEMPLATES.get(tpl_key)
+                    if tpl:
+                        tpl.render(widget, data, ctx)
+                if ctx is not None:
+                    widget._ctx = ctx
+                    self._bind_edit_clicks(widget)
+            return
+
+        td = self._tab_widgets.get(tab_key, {})
+        widget = td.get("widget")
+        if widget is None:
+            return
+        widget.config(state="normal")
+        widget.delete("1.0", tk.END)
+        self._cfg_tags(widget, c_ff)
+        ctx = RenderContext() if edit else None
+        for tpl_key in tab_def.templates:
+            tpl = TEMPLATES.get(tpl_key)
+            if tpl:
+                tpl.render(widget, data, ctx)
+        if ctx is not None:
+            widget._ctx = ctx
+            self._bind_edit_clicks(widget)
+
+    # ══════════════════════════════════════════
+    # INJECT MODALS
+    # ══════════════════════════════════════════
+
+    def _open_inject_thought(self):
+        if not self.current_json_data: return
+        uf = self.settings["ui_font_family"];
+        us = self.settings["ui_font_size"]
+        win = tk.Toplevel(self.root)
+        win.title("Inject Internal Thought")
+        win.configure(bg=C["surface"])
+        win.transient(self.root);
+        win.grab_set()
+        win.resizable(False, False)
+        win.geometry("520x320")
+        win.attributes("-topmost", True)
+
+        outer = tk.Frame(win, bg=C["surface"],
+                         highlightbackground=C["accent"], highlightthickness=1)
+        outer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        tk.Label(outer, text="Inject Internal Thought", bg=C["surface"], fg=C["accent"],
+                 font=(uf, 12, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+        tk.Label(outer, text="Appended to PendingAIResponse.internal_thoughts or InternalThoughts",
+                 bg=C["surface"], fg=C["fg_muted"],
+                 font=(uf, us - 2)).pack(anchor="w", padx=20, pady=(0, 8))
+        tk.Frame(outer, bg=C["border"], height=1).pack(fill=tk.X, padx=20)
+
+        text_w = dark_text(outer, font=(self.settings["content_font_family"],
+                                        self.settings["content_font_size"]),
+                           height=8)
+        text_w.pack(fill=tk.BOTH, expand=True, padx=20, pady=12)
+        text_w.config(state="normal")
+
+        btn_row = tk.Frame(outer, bg=C["surface"])
+        btn_row.pack(fill=tk.X, padx=20, pady=(0, 16))
+
+        def confirm():
+            val = text_w.get("1.0", "end-1c").strip()
+            if not val:
+                win.destroy();
+                return
+            data = self.current_json_data
+            pending = data.get("PendingAIResponse")
+            if isinstance(pending, dict) and "internal_thoughts" in pending:
+                existing = pending.get("internal_thoughts", "")
+                pending["internal_thoughts"] = (existing + " " + val).strip()
+            else:
+                existing = data.get("InternalThoughts", "")
+                data["InternalThoughts"] = (existing + " " + val).strip()
+            self.autosave.mark_dirty()
+            self._rerender_single_tab("internal")
+            self.status.set("Thought injected", "ok")
+            win.destroy()
+
+        AccentButton(btn_row, text="Inject", command=confirm).pack(side=tk.LEFT)
+        FlatButton(btn_row, text="Cancel", command=win.destroy,
+                   bg=C["surface2"], fg=C["fg_dim"],
+                   hover_bg=C["surface3"], hover_fg=C["red"],
+                   padx=10).pack(side=tk.LEFT, padx=8)
+
+    def _open_inject_message(self):
+        if not self.current_json_data: return
+        uf = self.settings["ui_font_family"];
+        us = self.settings["ui_font_size"]
+        data = self.current_json_data
+        win = tk.Toplevel(self.root)
+        win.title("Inject Conversation Turn")
+        win.configure(bg=C["surface"])
+        win.transient(self.root);
+        win.grab_set()
+        win.resizable(False, False)
+        win.geometry("520x360")
+        win.attributes("-topmost", True)
+
+        outer = tk.Frame(win, bg=C["surface"],
+                         highlightbackground=C["border"], highlightthickness=1)
+        outer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        tk.Label(outer, text="Inject Conversation Turn", bg=C["surface"], fg=C["accent"],
+                 font=(uf, 12, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+        tk.Frame(outer, bg=C["border"], height=1).pack(fill=tk.X, padx=20)
+
+        sp_row = tk.Frame(outer, bg=C["surface"])
+        sp_row.pack(fill=tk.X, padx=20, pady=(12, 4))
+        tk.Label(sp_row, text="Speaker", bg=C["surface"], fg=C["fg_dim"],
+                 font=(uf, us - 1)).pack(side=tk.LEFT)
+
+        player_id = data.get("player_bind_string_id", "main_hero")
+        npc_name = data.get("Name", "NPC")
+        speakers = [player_id, npc_name]
+        sp_var = tk.StringVar(value=speakers[0])
+        cb = ttk.Combobox(sp_row, textvariable=sp_var, values=speakers,
+                          state="readonly", width=24, style="TCombobox")
+        cb.pack(side=tk.LEFT, padx=(8, 0))
+
+        tk.Label(outer, text="Message", bg=C["surface"], fg=C["fg_dim"],
+                 font=(uf, us - 1)).pack(anchor="w", padx=20, pady=(8, 2))
+        text_w = dark_text(outer, font=(self.settings["content_font_family"],
+                                        self.settings["content_font_size"]),
+                           height=7)
+        text_w.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 8))
+        text_w.config(state="normal")
+
+        btn_row = tk.Frame(outer, bg=C["surface"])
+        btn_row.pack(fill=tk.X, padx=20, pady=(0, 16))
+
+        def confirm():
+            msg = text_w.get("1.0", "end-1c").strip()
+            if not msg:
+                win.destroy();
+                return
+            speaker = sp_var.get().strip()
+            entry = f"{speaker}: {msg}"
+            if "ConversationHistory" not in data or not isinstance(data["ConversationHistory"], list):
+                data["ConversationHistory"] = []
+            data["ConversationHistory"].append(entry)
+            self.autosave.mark_dirty()
+            self._rerender_single_tab("conv")
+            self.status.set("Message injected", "ok")
+            win.destroy()
+
+        AccentButton(btn_row, text="Inject", command=confirm).pack(side=tk.LEFT)
+        FlatButton(btn_row, text="Cancel", command=win.destroy,
+                   bg=C["surface2"], fg=C["fg_dim"],
+                   hover_bg=C["surface3"], hover_fg=C["red"],
+                   padx=10).pack(side=tk.LEFT, padx=8)
+
+    # ══════════════════════════════════════════
     # BOOKMARKS & SETTINGS
     # ══════════════════════════════════════════
 
@@ -866,7 +1277,8 @@ class NPCViewerApp:
             "name": self.current_json_data.get("Name", "Unknown") if self.current_json_data else "Unknown",
             "added": datetime.now().isoformat()
         })
-        self.save_bookmarks(); self._refresh_bookmark_list()
+        self.save_bookmarks();
+        self._refresh_bookmark_list()
 
     def _refresh_bookmark_list(self):
         self.bookmark_listbox.delete(0, tk.END)
@@ -889,12 +1301,17 @@ class NPCViewerApp:
     def remove_bookmark(self):
         sel = self.bookmark_listbox.curselection()
         if sel and 0 <= sel[0] < len(self.bookmarks):
-            self.bookmarks.pop(sel[0]); self.save_bookmarks(); self._refresh_bookmark_list()
+            self.bookmarks.pop(sel[0]);
+            self.save_bookmarks();
+            self._refresh_bookmark_list()
 
     def open_settings(self):
         win = tk.Toplevel(self.root)
-        win.title("Settings"); win.geometry("560x640"); win.configure(bg=C["surface"])
-        win.transient(self.root); win.grab_set()
+        win.title("Settings");
+        win.geometry("560x720");
+        win.configure(bg=C["surface"])
+        win.transient(self.root);
+        win.grab_set()
         tk.Label(win, text=" ◉ Settings", bg=C["surface"], fg=C["accent"],
                  font=("Segoe UI", 14, "bold"), anchor="w").pack(fill=tk.X, pady=(20, 0), padx=20)
         tk.Frame(win, bg=C["border"], height=1).pack(fill=tk.X, pady=12)
@@ -910,7 +1327,8 @@ class NPCViewerApp:
         ttk.Checkbutton(body, text="Auto-load last session", variable=auto_var,
                         style="TCheckbutton").pack(anchor="w", padx=24, pady=2)
         delay_var = tk.IntVar(value=self.settings.get("autosave_delay_ms", 1000))
-        d_f = tk.Frame(body, bg=C["surface"]); d_f.pack(fill=tk.X, padx=24, pady=6)
+        d_f = tk.Frame(body, bg=C["surface"]);
+        d_f.pack(fill=tk.X, padx=24, pady=6)
         tk.Label(d_f, text="Autosave Delay (ms)", bg=C["surface"], fg=C["fg"],
                  font=("Segoe UI", 9)).pack(side=tk.LEFT)
         ttk.Entry(d_f, textvariable=delay_var, width=8, style="TEntry").pack(side=tk.RIGHT)
@@ -929,23 +1347,54 @@ class NPCViewerApp:
             lbl.pack(side=tk.RIGHT, padx=12)
             ttk.Scale(f, from_=8, to=max_s, variable=fs_var, orient=tk.HORIZONTAL, length=140,
                       command=lambda v: lbl.config(text=f"{int(float(v))}pt")).pack(
-                          side=tk.RIGHT, padx=4)
+                side=tk.RIGHT, padx=4)
             return ff_var, fs_var
 
         ui_ff, ui_fs = font_picker("UI FONT (Requires Restart)", "ui_font_family", "ui_font_size", 24)
         c_ff, c_fs = font_picker("CONTENT FONT (Prose & Logs)", "content_font_family", "content_font_size", 32)
         k_ff, k_fs = font_picker("CODE FONT (JSON & Stats)", "code_font_family", "code_font_size", 32)
+
+        # ── EXPERIMENTAL ──────────────────────
+        sec("EXPERIMENTAL")
+        exp_card = tk.Frame(body, bg=C["surface"],
+                            highlightbackground=C["red"], highlightthickness=1)
+        exp_card.pack(fill=tk.X, padx=12, pady=(4, 12))
+        warn_inner = tk.Frame(exp_card, bg=C["surface"])
+        warn_inner.pack(fill=tk.X, padx=20, pady=16)
+        tk.Label(warn_inner,
+                 text="⚠  Edit mode directly modifies JSON files on disk.",
+                 bg=C["surface"], fg=C["red"],
+                 font=("Segoe UI", 9, "bold"),
+                 wraplength=460, justify="left").pack(anchor="w")
+        tk.Label(warn_inner,
+                 text="Changes are autosaved immediately. Ensure you have backups before enabling.",
+                 bg=C["surface"], fg=C["fg_dim"],
+                 font=("Segoe UI", 8),
+                 wraplength=460, justify="left").pack(anchor="w", pady=(4, 10))
+        edit_var = tk.BooleanVar(value=self.settings.get("edit_mode_enabled", False))
+        ttk.Checkbutton(warn_inner, text="Enable Edit Mode (EXPERIMENTAL)",
+                        variable=edit_var,
+                        style="TCheckbutton").pack(anchor="w")
+
         tk.Frame(win, bg=C["border"], height=1).pack(fill=tk.X, pady=(12, 0))
-        btn_row = tk.Frame(win, bg=C["surface"]); btn_row.pack(fill=tk.X, padx=24, pady=12)
+        btn_row = tk.Frame(win, bg=C["surface"]);
+        btn_row.pack(fill=tk.X, padx=24, pady=12)
 
         def save():
             self.settings.update({
-                "auto_load_last": auto_var.get(), "autosave_delay_ms": delay_var.get(),
-                "ui_font_family": ui_ff.get(), "ui_font_size": int(ui_fs.get()),
-                "content_font_family": c_ff.get(), "content_font_size": int(c_fs.get()),
-                "code_font_family": k_ff.get(), "code_font_size": int(k_fs.get()),
+                "auto_load_last": auto_var.get(),
+                "autosave_delay_ms": delay_var.get(),
+                "ui_font_family": ui_ff.get(),
+                "ui_font_size": int(ui_fs.get()),
+                "content_font_family": c_ff.get(),
+                "content_font_size": int(c_fs.get()),
+                "code_font_family": k_ff.get(),
+                "code_font_size": int(k_fs.get()),
+                "edit_mode_enabled": edit_var.get(),
             })
-            self.save_config(); self._display_data()
+            self.save_config()
+            self._display_data()
+            self._update_edit_ui()
             self.status.set("Settings saved (Restart for UI changes)", "ok")
             win.destroy()
 
@@ -954,10 +1403,9 @@ class NPCViewerApp:
                    fg=C["fg_dim"], hover_bg=C["surface3"],
                    hover_fg=C["red"]).pack(side=tk.LEFT, padx=8)
 
-
-# ─────────────────────────────────────────────
-# ENTRY POINT
-# ─────────────────────────────────────────────
+    # ─────────────────────────────────────────────
+    # ENTRY POINT
+    # ─────────────────────────────────────────────
 
 def main():
     root = tk.Tk()
@@ -966,8 +1414,9 @@ def main():
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     w, h = 1700, 1000
-    root.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
-    root.deiconify(); root.update_idletasks()
+    root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+    root.deiconify();
+    root.update_idletasks()
     if platform.system() == "Windows":
         try:
             import ctypes
@@ -978,7 +1427,6 @@ def main():
             pass
     root.protocol("WM_DELETE_WINDOW", lambda: (app.save_config(), root.destroy()))
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()
