@@ -392,10 +392,11 @@ class NPCViewerApp:
 
     def back_to_hub(self):
         self.save_config()
-        self.root.destroy:
+        self.root.destroy()
         if self.on_close:
             self.on_close()
-    def minimize(self)()
+
+    def minimize(self):
         if platform.system() == "Windows":
             self.root.overrideredirect(False)
             self.root.iconify()
