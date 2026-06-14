@@ -25,6 +25,15 @@ C = {
     "border": "#252a38",
 }
 
+# Map script filename → app class name
+SECTION_CLASS_MAP = {
+    "ai_characters.py": "NPCViewerApp",
+    "prompt_management.py": "PromptManagementApp",
+    "settings.py": "SettingsApp",
+    "about.py": "AboutApp",
+}
+
+
 class CustomTitleBar(tk.Frame):
     def __init__(self, parent, root, title=""):
         super().__init__(parent, bg=C["bg"], height=36)
@@ -85,6 +94,7 @@ class CustomTitleBar(tk.Frame):
             self._is_max = True
             self._max_btn.config(text="\u2750")
 
+
 class NavCard(tk.Frame):
     def __init__(self, parent, icon, title, subtitle, command, accent=C["accent"], **kw):
         super().__init__(parent, bg=C["surface"], cursor="hand2",
@@ -141,6 +151,7 @@ class NavCard(tk.Frame):
     def _click(self, _=None):
         if self._cmd:
             self.after(80, self._cmd)
+
 
 class LuminousHub:
     SECTIONS = [
@@ -228,55 +239,49 @@ class LuminousHub:
         if not os.path.exists(path):
             mb.showinfo("Coming Soon", f"Section '{script_name}' is not yet implemented.")
             return
-
-        # Fade out hub
-        self._fade_window(self.root, 1.0, 0.85, steps=5, callback=lambda: self._launch_section_window(path, script_name))
+        if script_name not in SECTION_CLASS_MAP:
+            mb.showinfo("Coming Soon", f"Section '{script_name}' is not yet wired up.")
+            return
+        self._fade_window(self.root, 1.0, 0.85, steps=5,
+                          callback=lambda: self._launch_section_window(path, script_name))
 
     def _launch_section_window(self, path, script_name):
-        """Create and show the section Toplevel."""
-        if script_name == "ai_characters.py":
-            try:
-                # Import and launch in-process
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("section_module", path)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+        """Create and show the section Toplevel (in-process)."""
+        class_name = SECTION_CLASS_MAP.get(script_name)
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("section_module", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
 
-                # Create Toplevel
-                section_win = tk.Toplevel(self.root)
-                section_win.withdraw()  # Hide initially
-                self._active_section_window = section_win
+            app_class = getattr(module, class_name)
 
-                # Create app instance with callback to return to hub
-                app = module.NPCViewerApp(section_win, on_close=self._return_to_hub)
-                
-                # Fade in section window
-                section_win.deiconify()
-                self._fade_window(section_win, 0.0, 1.0, steps=8)
-                
-            except Exception as e:
-                mb.showerror("Launch Error", f"{script_name} failed to load:\n\n{e}")
-                self._return_to_hub()
-        else:
-            mb.showinfo("Coming Soon", f"Section '{script_name}' is not yet implemented.")
+            section_win = tk.Toplevel(self.root)
+            section_win.withdraw()
+            self._active_section_window = section_win
+
+            app_class(section_win, on_close=self._return_to_hub)
+
+            section_win.deiconify()
+            self._fade_window(section_win, 0.0, 1.0, steps=8)
+
+        except Exception as e:
+            mb.showerror("Launch Error", f"{script_name} failed to load:\n\n{e}")
             self._return_to_hub()
 
     def _return_to_hub(self):
         """Return to hub from section window."""
-        if self._active_section_window:
-            # Fade out section
-            self._fade_window(self._active_section_window, 1.0, 0.0, steps=5, 
-                            callback=lambda: self._active_section_window.destroy() if self._active_section_window else None)
-            self._active_section_window = None
-        
-        # Fade in hub
+        win = self._active_section_window
+        self._active_section_window = None
+        if win and win.winfo_exists():
+            self._fade_window(win, 1.0, 0.0, steps=5,
+                              callback=lambda: win.destroy() if win.winfo_exists() else None)
         self._fade_window(self.root, 0.85, 1.0, steps=5)
 
     def _fade_window(self, window, start_alpha, end_alpha, steps=10, callback=None):
         """Smoothly transition window alpha."""
         if not window.winfo_exists():
             return
-            
         step_size = (end_alpha - start_alpha) / steps
         current_step = [0]
 
@@ -290,14 +295,16 @@ class LuminousHub:
                 window.after(20, fade_step)
             elif callback:
                 callback()
-        
+
         fade_step()
+
 
 def main():
     root = tk.Tk()
-    root.attributes("-alpha", 1.0)  # Ensure alpha support
+    root.attributes("-alpha", 1.0)
     LuminousHub(root)
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()

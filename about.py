@@ -4,8 +4,6 @@ Luminous AI — About & Updates Section
 """
 import tkinter as tk
 import platform
-import subprocess
-import sys
 import os
 
 C = {
@@ -42,9 +40,9 @@ class CustomTitleBar(tk.Frame):
         lbl.bind("<B1-Motion>", self._do_move)
         btns = tk.Frame(self, bg=C["bg"])
         btns.pack(side=tk.RIGHT, fill=tk.Y)
-        self._mk_btn(btns, "—", self._minimize, C["bg"])
-        self._max_btn = self._mk_btn(btns, "☐", self._toggle_max, C["bg"])
-        self._mk_btn(btns, "✕", root.destroy, C["bg"], hover_bg=C["red"])
+        self._mk_btn(btns, "\u2014", self._minimize, C["bg"])
+        self._max_btn = self._mk_btn(btns, "\u2610", self._toggle_max, C["bg"])
+        self._mk_btn(btns, "\u2715", root.destroy, C["bg"], hover_bg=C["red"])
 
     def _mk_btn(self, parent, text, cmd, bg, hover_bg=None):
         hbg = hover_bg or C["surface3"]
@@ -79,18 +77,19 @@ class CustomTitleBar(tk.Frame):
         if self._is_max:
             self._root.geometry(self._norm_geo)
             self._is_max = False
-            self._max_btn.config(text="☐")
+            self._max_btn.config(text="\u2610")
         else:
             self._norm_geo = self._root.geometry()
             sw, sh = self._root.winfo_screenwidth(), self._root.winfo_screenheight()
             self._root.geometry(f"{sw}x{sh}+0+0")
             self._is_max = True
-            self._max_btn.config(text="❐")
+            self._max_btn.config(text="\u2750")
 
 
 class AboutApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, on_close=None):
         self.root = root
+        self._on_close = on_close
         root.overrideredirect(True)
         root.configure(bg=C["bg"])
         root.geometry("680x420")
@@ -103,23 +102,22 @@ class AboutApp:
         y = (sh - 420) // 2
         root.geometry(f"680x420+{x}+{y}")
 
-        bar = CustomTitleBar(root, root, title="Luminous AI — About & Updates")
+        bar = CustomTitleBar(root, root, title="Luminous AI \u2014 About & Updates")
         bar.pack(fill=tk.X)
 
         nav = tk.Frame(root, bg=C["bg"])
         nav.pack(fill=tk.X, padx=20, pady=(8, 0))
-        back_btn = tk.Label(nav, text="← Back to Hub", bg=C["bg"], fg=C["fg_dim"],
+        back_btn = tk.Label(nav, text="\u2190 Back to Hub", bg=C["bg"], fg=C["fg_dim"],
                             font=("Segoe UI", 9), cursor="hand2")
         back_btn.pack(side=tk.LEFT)
         back_btn.bind("<Enter>", lambda e: back_btn.config(fg=C["accent"]))
         back_btn.bind("<Leave>", lambda e: back_btn.config(fg=C["fg_dim"]))
         back_btn.bind("<Button-1>", lambda e: self._back_to_hub())
 
-        # Content
         body = tk.Frame(root, bg=C["bg"])
         body.pack(fill=tk.BOTH, expand=True, padx=48, pady=24)
 
-        tk.Label(body, text="◎  Luminous AI", bg=C["bg"], fg=C["green"],
+        tk.Label(body, text="\u25ce  Luminous AI", bg=C["bg"], fg=C["green"],
                  font=("Segoe UI", 22, "bold")).pack(anchor="w")
         tk.Label(body, text=f"Version {APP_VERSION}", bg=C["bg"], fg=C["fg_dim"],
                  font=("Segoe UI", 11)).pack(anchor="w", pady=(4, 0))
@@ -151,9 +149,10 @@ class AboutApp:
                                 fg=C["fg_muted"])
 
     def _back_to_hub(self):
-        self.root.destroy()
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
-        subprocess.Popen([sys.executable, path])
+        if self._on_close:
+            self._on_close()
+        else:
+            self.root.destroy()
 
 
 def main():
