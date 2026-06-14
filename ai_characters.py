@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Luminous AI — Main Launcher
-Entry point: shows hub with section buttons, each opens its own page.
+Luminous AI — AI Characters Section
+Previously the main HubApp. Launched from main.py hub.
 """
 import tkinter as tk
 import platform
@@ -88,9 +88,6 @@ class CustomTitleBar(tk.Frame):
 
 
 class NavCard(tk.Frame):
-    """
-    A large clickable card for the hub grid.
-    """
     def __init__(self, parent, icon, title, subtitle, command, accent=C["accent"], **kw):
         super().__init__(parent, bg=C["surface"], cursor="hand2",
                          highlightbackground=C["border"], highlightthickness=1, **kw)
@@ -148,45 +145,21 @@ class NavCard(tk.Frame):
             self.after(80, self._cmd)
 
 
-def _open_section(script_name: str):
-    """Launch a section script as a separate process."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
-    if not os.path.exists(path):
-        import tkinter.messagebox as mb
-        mb.showinfo("Coming Soon", f"Section '{script_name}' is not yet implemented.")
-        return
-    subprocess.Popen([sys.executable, path])
-
-
-class LuminousHub:
+class HubApp:
     SECTIONS = [
         {
             "icon":     "◆",
             "title":    "AI Characters",
             "subtitle": "Browse, inspect and edit NPC character JSON files",
-            "script":   "ai_characters.py",
+            "module":   "ai_characters.py",
             "accent":   C["accent"],
         },
         {
             "icon":     "⊞",
             "title":    "Prompt Management",
             "subtitle": "Manage, organise and export prompt templates",
-            "script":   "prompt_management.py",
+            "module":   "prompt_management.py",
             "accent":   C["accent2"],
-        },
-        {
-            "icon":     "⚙",
-            "title":    "Settings",
-            "subtitle": "Configure application preferences and paths",
-            "script":   "settings.py",
-            "accent":   C["accent3"],
-        },
-        {
-            "icon":     "◎",
-            "title":    "About & Updates",
-            "subtitle": "App info, version details and update checker",
-            "script":   "about.py",
-            "accent":   C["green"],
         },
     ]
 
@@ -194,59 +167,53 @@ class LuminousHub:
         self.root = root
         root.overrideredirect(True)
         root.configure(bg=C["bg"])
-        root.geometry("780x520")
-        root.resizable(False, False)
+        root.geometry("900x640")
+        root.resizable(True, True)
 
-        # Center window
         root.update_idletasks()
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
-        x = (sw - 780) // 2
-        y = (sh - 520) // 2
-        root.geometry(f"780x520+{x}+{y}")
+        x = (sw - 900) // 2
+        y = (sh - 640) // 2
+        root.geometry(f"900x640+{x}+{y}")
 
-        # Title bar
-        bar = CustomTitleBar(root, root, title="Luminous AI — Hub")
+        bar = CustomTitleBar(root, root, title="Luminous AI — AI Characters")
         bar.pack(fill=tk.X)
 
-        # Header
+        # Back button row
+        nav = tk.Frame(root, bg=C["bg"])
+        nav.pack(fill=tk.X, padx=20, pady=(8, 0))
+        back_btn = tk.Label(nav, text="← Back to Hub", bg=C["bg"], fg=C["fg_dim"],
+                            font=("Segoe UI", 9), cursor="hand2")
+        back_btn.pack(side=tk.LEFT)
+        back_btn.bind("<Enter>", lambda e: back_btn.config(fg=C["accent"]))
+        back_btn.bind("<Leave>", lambda e: back_btn.config(fg=C["fg_dim"]))
+        back_btn.bind("<Button-1>", lambda e: self._back_to_hub())
+
         header = tk.Frame(root, bg=C["bg"])
-        header.pack(fill=tk.X, padx=32, pady=(24, 8))
-        tk.Label(header, text="Luminous AI", bg=C["bg"], fg=C["fg"],
-                 font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        tk.Label(header, text="Select a section to get started", bg=C["bg"], fg=C["fg_dim"],
+        header.pack(fill=tk.X, padx=32, pady=(12, 8))
+        tk.Label(header, text="AI Characters", bg=C["bg"], fg=C["fg"],
+                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        tk.Label(header, text="Browse, inspect and edit NPC character JSON files",
+                 bg=C["bg"], fg=C["fg_dim"],
                  font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
 
-        # Divider
-        tk.Frame(root, bg=C["border"], height=1).pack(fill=tk.X, padx=32, pady=(8, 20))
+        tk.Frame(root, bg=C["border"], height=1).pack(fill=tk.X, padx=32, pady=(8, 16))
 
-        # Card grid (2x2)
-        grid = tk.Frame(root, bg=C["bg"])
-        grid.pack(fill=tk.BOTH, expand=True, padx=32, pady=(0, 28))
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
-        grid.rowconfigure(0, weight=1)
-        grid.rowconfigure(1, weight=1)
+        content = tk.Frame(root, bg=C["bg"])
+        content.pack(fill=tk.BOTH, expand=True, padx=32, pady=(0, 28))
+        tk.Label(content, text="AI Characters viewer will be implemented here.",
+                 bg=C["bg"], fg=C["fg_dim"], font=("Segoe UI", 11)).pack(expand=True)
 
-        for i, sec in enumerate(self.SECTIONS):
-            row, col = divmod(i, 2)
-            script = sec["script"]
-            card = NavCard(
-                grid,
-                icon=sec["icon"],
-                title=sec["title"],
-                subtitle=sec["subtitle"],
-                command=lambda s=script: _open_section(s),
-                accent=sec["accent"],
-            )
-            card.grid(row=row, column=col, sticky="nsew",
-                      padx=(0, 8) if col == 0 else (8, 0),
-                      pady=(0, 8) if row == 0 else (8, 0))
+    def _back_to_hub(self):
+        self.root.destroy()
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+        subprocess.Popen([sys.executable, path])
 
 
 def main():
     root = tk.Tk()
-    LuminousHub(root)
+    HubApp(root)
     root.mainloop()
 
 
