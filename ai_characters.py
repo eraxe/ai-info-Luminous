@@ -337,7 +337,7 @@ class AutosaveManager:
 
 class NPCViewerApp:
 
-    def __init__(self, root), on_close=None):
+    def __init__(self, root, on_close=None):
         self.root = root
         self.on_close = on_close
         self.root.title("NPC Viewer")
