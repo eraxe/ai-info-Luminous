@@ -3,17 +3,27 @@
 Luminous AI — AI Characters Section
 Full NPCViewerApp. Launched from main.py hub.
 """
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox, font as tkfont
-import json
-import os
-import platform
-import subprocess
 import sys
-from datetime import datetime
-from pathlib import Path
+import os
 
-from jsonTemplate import TEMPLATES, TABS, TAG_CONFIG, KNOWN_KEYS, RenderContext
+# --- surfaced import error ---
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, scrolledtext, messagebox, font as tkfont
+    import json
+    import platform
+    import subprocess
+    from datetime import datetime
+    from pathlib import Path
+    from jsonTemplate import TEMPLATES, TABS, TAG_CONFIG, KNOWN_KEYS, RenderContext
+except Exception as _import_err:
+    import tkinter as _tk
+    import tkinter.messagebox as _mb
+    _r = _tk.Tk()
+    _r.withdraw()
+    _mb.showerror("Import Error", f"ai_characters.py failed to load:\n\n{_import_err}")
+    _r.destroy()
+    sys.exit(1)
 
 C = {
     "bg":        "#0d0f14",
@@ -34,16 +44,16 @@ C = {
 
 
 class Icons:
-    FOLDER   = "⬡"
-    REFRESH  = "↺"
-    BOOKMARK = "◈"
-    SETTINGS = "◉"
-    SEARCH   = "⌕"
-    COLLAPSE = "‹"
-    COPY     = "⎘"
-    EXPORT   = "↗"
-    PIN      = "⊕"
-    TRASH    = "⊘"
+    FOLDER   = "\u2b21"
+    REFRESH  = "\u21ba"
+    BOOKMARK = "\u25c8"
+    SETTINGS = "\u25c9"
+    SEARCH   = "\u2315"
+    COLLAPSE = "\u2039"
+    COPY     = "\u2398"
+    EXPORT   = "\u2197"
+    PIN      = "\u2295"
+    TRASH    = "\u2298"
 
 
 class FlatButton(tk.Label):
@@ -135,7 +145,7 @@ class StatusBar(tk.Frame):
     def __init__(self, parent, ui_font, ui_size, **kw):
         super().__init__(parent, bg=C["surface"], height=26, **kw)
         self.pack_propagate(False)
-        self._dot = tk.Label(self, text="●", bg=C["surface"], fg=C["green"],
+        self._dot = tk.Label(self, text="\u25cf", bg=C["surface"], fg=C["green"],
                              font=(ui_font, ui_size - 1))
         self._dot.pack(side=tk.LEFT, padx=(10, 4))
         self._msg = tk.Label(self, text="Ready", bg=C["surface"], fg=C["fg_dim"],
@@ -167,15 +177,13 @@ class CustomTitleBar(tk.Frame):
         self.bind("<B1-Motion>", self.do_move)
         self.bind("<Double-Button-1>", lambda e: self.toggle_max())
 
-        # Back to Hub button (left side)
-        back = tk.Label(self, text="⬡ Hub", bg=C["bg"], fg=C["fg_muted"],
+        back = tk.Label(self, text="\u2b21 Hub", bg=C["bg"], fg=C["fg_muted"],
                         font=("Segoe UI", 8), padx=10, pady=6, cursor="hand2")
         back.pack(side=tk.LEFT)
         back.bind("<Enter>", lambda e: back.config(fg=C["accent"]))
         back.bind("<Leave>", lambda e: back.config(fg=C["fg_muted"]))
         back.bind("<Button-1>", lambda e: app.back_to_hub())
 
-        # Separator
         tk.Frame(self, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8), pady=6)
 
         self.lbl = tk.Label(self, text=f" {title}", bg=C["bg"], fg=C["fg_dim"],
@@ -187,12 +195,12 @@ class CustomTitleBar(tk.Frame):
 
         btns = tk.Frame(self, bg=C["bg"])
         btns.pack(side=tk.RIGHT, fill=tk.Y)
-        FlatButton(btns, text="—", command=self.min_app, bg=C["bg"],
+        FlatButton(btns, text="\u2014", command=self.min_app, bg=C["bg"],
                    hover_bg=C["surface3"], padx=14).pack(side=tk.LEFT, fill=tk.Y)
-        self.max_btn = FlatButton(btns, text="☐", command=self.toggle_max,
+        self.max_btn = FlatButton(btns, text="\u2610", command=self.toggle_max,
                                   bg=C["bg"], hover_bg=C["surface3"], padx=14)
         self.max_btn.pack(side=tk.LEFT, fill=tk.Y)
-        FlatButton(btns, text="✕", command=self.close_app, bg=C["bg"],
+        FlatButton(btns, text="\u2715", command=self.close_app, bg=C["bg"],
                    hover_bg=C["red"], hover_fg="#fff", padx=14).pack(side=tk.LEFT, fill=tk.Y)
         self._is_max = False
 
@@ -217,14 +225,14 @@ class CustomTitleBar(tk.Frame):
             if hasattr(self, "_normal_geo"):
                 self.root.geometry(self._normal_geo)
             self._is_max = False
-            self.max_btn.config(text="☐")
+            self.max_btn.config(text="\u2610")
             self.app.grip.place(relx=1.0, rely=1.0, anchor="se")
         else:
             self._normal_geo = self.root.geometry()
             sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
             self.root.geometry(f"{sw}x{sh}+0+0")
             self._is_max = True
-            self.max_btn.config(text="❐")
+            self.max_btn.config(text="\u2750")
             self.app.grip.place_forget()
 
     def close_app(self):
@@ -317,12 +325,12 @@ class AutosaveManager:
     def _try_write(self, retries=3):
         try:
             _atomic_write_json(self.app.current_file_path, self.app.current_json_data)
-            self.app.status.set("Autosaved ✓", "ok")
+            self.app.status.set("Autosaved \u2713", "ok")
         except PermissionError:
             if retries > 0:
                 self.app.root.after(200, lambda: self._try_write(retries - 1))
             else:
-                self.app.status.set("Autosave failed — file locked", "error")
+                self.app.status.set("Autosave failed \u2014 file locked", "error")
         except Exception as e:
             self.app.status.set(f"Autosave error: {e}", "error")
 
@@ -447,7 +455,7 @@ class NPCViewerApp:
 
         logo_frame = tk.Frame(self._sidebar, bg=C["surface"], height=64)
         logo_frame.pack(fill=tk.X)
-        tk.Label(logo_frame, text="◆ NPC", bg=C["surface"], fg=C["accent"],
+        tk.Label(logo_frame, text="\u25c6 NPC", bg=C["surface"], fg=C["accent"],
                  font=(uf, us + 4, "bold")).pack(side=tk.LEFT, padx=(16, 0), pady=16)
         tk.Label(logo_frame, text="Viewer", bg=C["surface"], fg=C["fg_dim"],
                  font=(uf, us + 1)).pack(side=tk.LEFT, padx=(4, 0), pady=16)
@@ -548,7 +556,7 @@ class NPCViewerApp:
         self._header.grid_propagate(False)
         self._header.columnconfigure(1, weight=1)
 
-        tgl = tk.Label(self._header, text="≡", bg=C["surface"], fg=C["fg_muted"],
+        tgl = tk.Label(self._header, text="\u2261", bg=C["surface"], fg=C["fg_muted"],
                        font=(uf, 16), cursor="hand2")
         tgl.grid(row=0, column=0, padx=(16, 0), rowspan=2, sticky="ns")
         tgl.bind("<Button-1>", lambda _: self._toggle_sidebar())
@@ -564,12 +572,12 @@ class NPCViewerApp:
         self._edit_toolbar = tk.Frame(self._header, bg=C["surface"])
         self._edit_toolbar.grid(row=0, column=2, rowspan=2, sticky="ns", padx=(0, 16))
         self._btn_inject_thought = FlatButton(
-            self._edit_toolbar, text="⊕ Thought",
+            self._edit_toolbar, text="\u2295 Thought",
             command=self._open_inject_thought,
             bg=C["surface2"], fg=C["accent3"],
             font=(uf, us - 1), padx=10, pady=4)
         self._btn_inject_msg = FlatButton(
-            self._edit_toolbar, text="⊕ Message",
+            self._edit_toolbar, text="\u2295 Message",
             command=self._open_inject_message,
             bg=C["surface2"], fg=C["accent2"],
             font=(uf, us - 1), padx=10, pady=4)
@@ -614,7 +622,7 @@ class NPCViewerApp:
 
         self.status = StatusBar(self._main, uf, us)
         self.status.grid(row=2, column=0, sticky="ew")
-        self.status.set("Ready — open a directory to begin", "info")
+        self.status.set("Ready \u2014 open a directory to begin", "info")
 
     def _build_editor_dock(self, parent):
         uf = self.settings["ui_font_family"]
@@ -648,7 +656,7 @@ class NPCViewerApp:
                    hover_fg=C["red"], padx=12, pady=5).pack(side=tk.LEFT)
 
         hint = tk.Label(self._editor_dock,
-                        text="Ctrl+Enter save   •   Esc cancel   •   Ctrl+A select all",
+                        text="Ctrl+Enter save   \u2022   Esc cancel   \u2022   Ctrl+A select all",
                         bg=C["surface"], fg=C["fg_muted"],
                         font=(uf, us - 2), anchor="w")
         hint.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
@@ -899,7 +907,7 @@ class NPCViewerApp:
             files.sort(key=lambda x: x[1], reverse=True)
             for fn, mtime, fp in files:
                 dt = datetime.fromtimestamp(mtime).strftime("%m/%d %H:%M")
-                self.file_listbox.insert(tk.END, f" {dt} · {fn}")
+                self.file_listbox.insert(tk.END, f" {dt} \u00b7 {fn}")
                 self.file_paths.append(fp)
             self._file_count_lbl.config(text=str(len(files)))
         except Exception:
@@ -918,7 +926,7 @@ class NPCViewerApp:
             if fn.endswith(".json") and term in fn.lower():
                 fp = os.path.join(directory, fn)
                 dt = datetime.fromtimestamp(os.path.getmtime(fp)).strftime("%m/%d")
-                self.file_listbox.insert(tk.END, f" {dt} · {fn}")
+                self.file_listbox.insert(tk.END, f" {dt} \u00b7 {fn}")
                 self.file_paths.append(fp)
 
     def _on_file_select(self, event=None):
@@ -962,7 +970,7 @@ class NPCViewerApp:
         c_ff = self.settings["content_font_family"]
         edit = self.settings.get("edit_mode_enabled", False)
 
-        self._name_lbl.config(text=f"◆ {data.get('Name', 'Unknown')}")
+        self._name_lbl.config(text=f"\u25c6 {data.get('Name', 'Unknown')}")
 
         parts = []
         rel_obj = data.get("PlayerRelation", {})
@@ -971,12 +979,13 @@ class NPCViewerApp:
             rel_desc = rel_obj.get("Description", "")
             parts.append(f"Relation {rel_val:+d} ({rel_desc})" if rel_desc else f"Relation {rel_val:+d}")
         mood = data.get("EmotionalState", {}).get("Mood", "")
-        mi = {"joyful": "😊", "happy": "😊", "sad": "😔", "angry": "😠",
-              "neutral": "😐", "calm": "😌"}.get(mood.lower() if mood else "", "•")
+        mi = {"joyful": "\U0001f60a", "happy": "\U0001f60a", "sad": "\U0001f614",
+              "angry": "\U0001f620", "neutral": "\U0001f610",
+              "calm": "\U0001f60c"}.get(mood.lower() if mood else "", "\u2022")
         if mood:
             parts.append(f"{mi} {mood.capitalize()}")
         if data.get("IsInPlayerParty"):
-            parts.append("In Party ⬟")
+            parts.append("In Party \u2b1f")
         if data.get("IsWithPlayer"):
             parts.append("With Player")
         cs = data.get("CounterpartySocial", {})
@@ -984,7 +993,7 @@ class NPCViewerApp:
         trust = hero_social.get("trust_level")
         if trust is not None:
             parts.append(f"Trust {trust:.0%}")
-        self._stats_lbl.config(text=" · ".join(parts))
+        self._stats_lbl.config(text=" \u00b7 ".join(parts))
 
         for tab in TABS:
             if tab.key == "raw":
@@ -1468,7 +1477,7 @@ class NPCViewerApp:
         self.bookmark_listbox.delete(0, tk.END)
         for bm in self.bookmarks:
             dt = datetime.fromisoformat(bm.get("added", "")).strftime("%m/%d") if "added" in bm else "?"
-            self.bookmark_listbox.insert(tk.END, f" {dt} · {bm.get('name', '?')}")
+            self.bookmark_listbox.insert(tk.END, f" {dt} \u00b7 {bm.get('name', '?')}")
 
     def _on_bookmark_select(self, event=None):
         sel = self.bookmark_listbox.curselection()
@@ -1497,7 +1506,7 @@ class NPCViewerApp:
         win.configure(bg=C["surface"])
         win.transient(self.root)
         win.grab_set()
-        tk.Label(win, text=" ◉ Settings", bg=C["surface"], fg=C["accent"],
+        tk.Label(win, text=" \u25c9 Settings", bg=C["surface"], fg=C["accent"],
                  font=("Segoe UI", 14, "bold"), anchor="w").pack(fill=tk.X, pady=(20, 0), padx=20)
         tk.Frame(win, bg=C["border"], height=1).pack(fill=tk.X, pady=12)
         body = ScrollableFrame(win, bg=C["surface"])
@@ -1546,7 +1555,7 @@ class NPCViewerApp:
         warn_inner = tk.Frame(exp_card, bg=C["surface"])
         warn_inner.pack(fill=tk.X, padx=20, pady=16)
         tk.Label(warn_inner,
-                 text="⚠  Edit mode directly modifies JSON files on disk.",
+                 text="\u26a0  Edit mode directly modifies JSON files on disk.",
                  bg=C["surface"], fg=C["red"],
                  font=("Segoe UI", 9, "bold"),
                  wraplength=460, justify="left").pack(anchor="w")
@@ -1589,25 +1598,37 @@ class NPCViewerApp:
 
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
-    app = NPCViewerApp(root)
-    root.update_idletasks()
-    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    w, h = 1700, 1000
-    root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
-    root.deiconify()
-    root.update_idletasks()
-    if platform.system() == "Windows":
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        app = NPCViewerApp(root)
+        root.update_idletasks()
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w, h = 1700, 1000
+        root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        root.deiconify()
+        root.update_idletasks()
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+                style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+                ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x00040000)
+            except Exception:
+                pass
+        root.protocol("WM_DELETE_WINDOW", lambda: (app.save_config(), root.destroy()))
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
         try:
-            import ctypes
-            hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-            ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x00040000)
+            r = tk.Tk()
+            r.withdraw()
+            messagebox.showerror("Startup Error", f"NPCViewer crashed on startup:\n\n{err}", parent=r)
+            r.destroy()
         except Exception:
-            pass
-    root.protocol("WM_DELETE_WINDOW", lambda: (app.save_config(), root.destroy()))
-    root.mainloop()
+            print(err, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

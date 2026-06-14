@@ -4,8 +4,10 @@ Luminous AI — Main Launcher
 Entry point: shows hub with section buttons, each opens its own page.
 """
 import tkinter as tk
+import tkinter.messagebox as mb
 import platform
 import subprocess
+import threading
 import sys
 import os
 
@@ -41,9 +43,9 @@ class CustomTitleBar(tk.Frame):
         lbl.bind("<B1-Motion>", self._do_move)
         btns = tk.Frame(self, bg=C["bg"])
         btns.pack(side=tk.RIGHT, fill=tk.Y)
-        self._mk_btn(btns, "—", self._minimize, C["bg"])
-        self._max_btn = self._mk_btn(btns, "☐", self._toggle_max, C["bg"])
-        self._mk_btn(btns, "✕", root.destroy, C["bg"], hover_bg=C["red"])
+        self._mk_btn(btns, "\u2014", self._minimize, C["bg"])
+        self._max_btn = self._mk_btn(btns, "\u2610", self._toggle_max, C["bg"])
+        self._mk_btn(btns, "\u2715", root.destroy, C["bg"], hover_bg=C["red"])
 
     def _mk_btn(self, parent, text, cmd, bg, hover_bg=None):
         hbg = hover_bg or C["surface3"]
@@ -78,19 +80,16 @@ class CustomTitleBar(tk.Frame):
         if self._is_max:
             self._root.geometry(self._norm_geo)
             self._is_max = False
-            self._max_btn.config(text="☐")
+            self._max_btn.config(text="\u2610")
         else:
             self._norm_geo = self._root.geometry()
             sw, sh = self._root.winfo_screenwidth(), self._root.winfo_screenheight()
             self._root.geometry(f"{sw}x{sh}+0+0")
             self._is_max = True
-            self._max_btn.config(text="❐")
+            self._max_btn.config(text="\u2750")
 
 
 class NavCard(tk.Frame):
-    """
-    A large clickable card for the hub grid.
-    """
     def __init__(self, parent, icon, title, subtitle, command, accent=C["accent"], **kw):
         super().__init__(parent, bg=C["surface"], cursor="hand2",
                          highlightbackground=C["border"], highlightthickness=1, **kw)
@@ -107,7 +106,7 @@ class NavCard(tk.Frame):
         tk.Label(inner, text=subtitle, bg=C["surface"], fg=C["fg_dim"],
                  font=("Segoe UI", 9), wraplength=200, justify="left",
                  anchor="w").pack(anchor="w")
-        arrow = tk.Label(inner, text="→", bg=C["surface"], fg=C["fg_muted"],
+        arrow = tk.Label(inner, text="\u2192", bg=C["surface"], fg=C["fg_muted"],
                          font=("Segoe UI", 14))
         arrow.pack(anchor="e", pady=(16, 0))
         for w in self.winfo_children() + inner.winfo_children() + [inner, arrow]:
@@ -149,40 +148,60 @@ class NavCard(tk.Frame):
 
 
 def _open_section(script_name: str):
-    """Launch a section script as a separate process."""
+    """Launch a section script as a separate process; show error popup if it crashes."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
     if not os.path.exists(path):
-        import tkinter.messagebox as mb
         mb.showinfo("Coming Soon", f"Section '{script_name}' is not yet implemented.")
         return
-    subprocess.Popen([sys.executable, path])
+
+    proc = subprocess.Popen(
+        [sys.executable, path],
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+
+    def _watch():
+        _, stderr = proc.communicate()
+        if proc.returncode != 0 and stderr:
+            msg = stderr.decode(errors="replace").strip()
+            # schedule messagebox on main thread
+            try:
+                import tkinter as _tk
+                r = _tk.Tk()
+                r.withdraw()
+                mb.showerror("Launch Error", f"{script_name} crashed:\n\n{msg}", parent=r)
+                r.destroy()
+            except Exception:
+                pass
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 class LuminousHub:
     SECTIONS = [
         {
-            "icon":     "◆",
+            "icon":     "\u25c6",
             "title":    "AI Characters",
             "subtitle": "Browse, inspect and edit NPC character JSON files",
             "script":   "ai_characters.py",
             "accent":   C["accent"],
         },
         {
-            "icon":     "⊞",
+            "icon":     "\u229e",
             "title":    "Prompt Management",
             "subtitle": "Manage, organise and export prompt templates",
             "script":   "prompt_management.py",
             "accent":   C["accent2"],
         },
         {
-            "icon":     "⚙",
+            "icon":     "\u2699",
             "title":    "Settings",
             "subtitle": "Configure application preferences and paths",
             "script":   "settings.py",
             "accent":   C["accent3"],
         },
         {
-            "icon":     "◎",
+            "icon":     "\u25ce",
             "title":    "About & Updates",
             "subtitle": "App info, version details and update checker",
             "script":   "about.py",
@@ -197,7 +216,6 @@ class LuminousHub:
         root.geometry("780x520")
         root.resizable(False, False)
 
-        # Center window
         root.update_idletasks()
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
@@ -205,11 +223,9 @@ class LuminousHub:
         y = (sh - 520) // 2
         root.geometry(f"780x520+{x}+{y}")
 
-        # Title bar
-        bar = CustomTitleBar(root, root, title="Luminous AI — Hub")
+        bar = CustomTitleBar(root, root, title="Luminous AI \u2014 Hub")
         bar.pack(fill=tk.X)
 
-        # Header
         header = tk.Frame(root, bg=C["bg"])
         header.pack(fill=tk.X, padx=32, pady=(24, 8))
         tk.Label(header, text="Luminous AI", bg=C["bg"], fg=C["fg"],
@@ -217,10 +233,8 @@ class LuminousHub:
         tk.Label(header, text="Select a section to get started", bg=C["bg"], fg=C["fg_dim"],
                  font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
 
-        # Divider
         tk.Frame(root, bg=C["border"], height=1).pack(fill=tk.X, padx=32, pady=(8, 20))
 
-        # Card grid (2x2)
         grid = tk.Frame(root, bg=C["bg"])
         grid.pack(fill=tk.BOTH, expand=True, padx=32, pady=(0, 28))
         grid.columnconfigure(0, weight=1)
