@@ -337,8 +337,9 @@ class AutosaveManager:
 
 class NPCViewerApp:
 
-    def __init__(self, root):
+    def __init__(self, root), on_close=None):
         self.root = root
+        self.on_close = on_close
         self.root.title("NPC Viewer")
         self.root.overrideredirect(True)
         self.root.geometry("1700x1000")
@@ -391,10 +392,10 @@ class NPCViewerApp:
 
     def back_to_hub(self):
         self.save_config()
-        self.root.destroy()
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
-        subprocess.Popen([sys.executable, path])
-
+        self.root.destroy:
+            self.root.after(50, self._auto_load_last_session)
+        if self.on_close:
+            self.on_close()
     def minimize(self):
         if platform.system() == "Windows":
             self.root.overrideredirect(False)
