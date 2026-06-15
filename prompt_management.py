@@ -7,6 +7,7 @@ JSON form editor, paired active-file toggle, readonly mode, unsaved-changes guar
 import tkinter as tk
 import json
 import os
+import re
 import sys
 import platform
 import subprocess
@@ -76,6 +77,133 @@ CATEGORY_ICONS = {
     "world_data":                       "\u25bb",
     "__root__":                         "\u2026",
 }
+
+
+# ===========================================================================
+# Collections filesystem helpers
+# Storage layout: <app_base>/luminous_data/collections/<safe_name>/
+#   metadata.json  — collection record
+#   <prompt files> — copied prompt files
+# ===========================================================================
+
+def resolve_app_base_dir() -> Path:
+    """Return the directory that contains main.py (app base)."""
+    # When frozen (PyInstaller) sys.executable sits next to main.py.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    # Running from source: walk up from this file until main.py is found,
+    # fallback to this file's directory.
+    here = Path(__file__).resolve().parent
+    candidate = here / "main.py"
+    if candidate.is_file():
+        return here
+    return here
+
+
+def resolve_collections_root() -> Path:
+    """Return the collections root directory (does not create it)."""
+    return resolve_app_base_dir() / "luminous_data" / "collections"
+
+
+def ensure_collections_root() -> Path:
+    """Create the collections root directory if absent; return its path."""
+    root = resolve_collections_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def sanitize_collection_name(name: str) -> str:
+    """
+    Convert an arbitrary snapshot/collection name into a safe folder name.
+    - Strips leading/trailing whitespace
+    - Replaces runs of whitespace and path-unsafe characters with underscores
+    - Collapses consecutive underscores
+    - Strips leading/trailing underscores
+    - Truncates to 64 characters
+    - Falls back to 'collection' if result is empty
+    """
+    name = name.strip()
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+    name = re.sub(r'\s+', "_", name)
+    name = re.sub(r'_+', "_", name)
+    name = name.strip("_")
+    name = name[:64]
+    return name if name else "collection"
+
+
+def collection_meta_path(collection_dir: Path) -> Path:
+    """Return the metadata.json path for a given collection directory."""
+    return collection_dir / "metadata.json"
+
+
+def load_collection_meta(collection_dir: Path) -> Optional[dict]:
+    """
+    Load and return the metadata record for a single collection directory.
+    Returns None if the directory or metadata.json is missing/invalid.
+    Guarantees keys: name, safe_name, created_at, file_count, path.
+    """
+    meta_path = collection_meta_path(collection_dir)
+    if not meta_path.is_file():
+        return None
+    try:
+        with open(meta_path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+        if not isinstance(record, dict):
+            return None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    # Normalise guaranteed keys
+    record.setdefault("name", collection_dir.name)
+    record.setdefault("safe_name", collection_dir.name)
+    record.setdefault("created_at", "")
+    record["file_count"] = count_collection_files(collection_dir)
+    record["path"] = str(collection_dir)
+    return record
+
+
+def list_collections() -> list[dict]:
+    """
+    Scan the collections root and return a list of normalised metadata records,
+    sorted newest-first by the 'created_at' field (ISO-8601 string).
+    Directories without a valid metadata.json are skipped.
+    """
+    root = resolve_collections_root()
+    if not root.is_dir():
+        return []
+
+    records: list[dict] = []
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return []
+
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        record = load_collection_meta(entry)
+        if record is not None:
+            records.append(record)
+
+    records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return records
+
+
+def count_collection_files(collection_dir: Path) -> int:
+    """
+    Return the number of files inside collection_dir,
+    excluding metadata.json itself.
+    """
+    if not collection_dir.is_dir():
+        return 0
+    count = 0
+    try:
+        for item in collection_dir.iterdir():
+            if item.is_file() and item.name != "metadata.json":
+                count += 1
+    except OSError:
+        pass
+    return count
 
 
 # ===========================================================================
