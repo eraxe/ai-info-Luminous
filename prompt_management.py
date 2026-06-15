@@ -207,6 +207,298 @@ def count_collection_files(collection_dir: Path) -> int:
 
 
 # ===========================================================================
+# Snapshot creation helpers
+# Creates a point-in-time copy of prompt files under:
+#   luminous_data/collections/<snapshot_name>/
+# Each snapshot includes metadata.json and mirrored prompt files.
+# ===========================================================================
+
+def _build_snapshot_dir(snapshot_name: str) -> Path:
+    """
+    Resolve a collision-safe directory path for a new snapshot.
+    If <safe_name> already exists, appends _2, _3, … until a free slot is found.
+    Does NOT create the directory.
+    """
+    root = ensure_collections_root()
+    safe = sanitize_collection_name(snapshot_name)
+    candidate = root / safe
+    if not candidate.exists():
+        return candidate
+    n = 2
+    while True:
+        candidate = root / f"{safe}_{n}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _write_snapshot_meta(
+    snapshot_dir: Path,
+    name: str,
+    campaign_id: str,
+    scope_type: str,
+    scope_path: str,
+    file_count: int,
+) -> None:
+    """
+    Write metadata.json into snapshot_dir.
+
+    Fields written:
+        name          – human-readable snapshot name
+        safe_name     – folder name on disk
+        created_at    – ISO-8601 UTC timestamp
+        campaign_id   – source campaign identifier
+        scope_type    – "file" | "category" | "campaign"
+        scope_path    – relative path used as source (file or folder)
+        file_count    – number of prompt files copied
+    """
+    record = {
+        "name": name,
+        "safe_name": snapshot_dir.name,
+        "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "campaign_id": campaign_id,
+        "scope_type": scope_type,
+        "scope_path": scope_path,
+        "file_count": file_count,
+    }
+    meta_path = snapshot_dir / "metadata.json"
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2, ensure_ascii=False)
+
+
+def _copy_prompt_file(src: Path, prompts_root: Path, snapshot_dir: Path) -> Path:
+    """
+    Copy a single prompt file into snapshot_dir, mirroring its relative path
+    from prompts_root.  Creates intermediate subdirectories as needed.
+    Returns the destination path.
+    """
+    try:
+        rel = src.relative_to(prompts_root)
+    except ValueError:
+        # Fallback: place directly in snapshot root using filename only
+        rel = Path(src.name)
+    dest = snapshot_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    return dest
+
+
+def snapshot_from_file(
+    entry: "PromptFileEntry",
+    prompts_root: str,
+    campaign_id: str,
+    snapshot_name: str = "",
+) -> dict:
+    """
+    Create a snapshot containing only the files belonging to a single
+    PromptFileEntry (base file + active variant if present).
+
+    Parameters
+    ----------
+    entry          : the selected PromptFileEntry
+    prompts_root   : absolute path to the campaign's prompts/ directory
+    campaign_id    : campaign identifier string
+    snapshot_name  : optional human-readable name; auto-generated if empty
+
+    Returns
+    -------
+    dict with keys:
+        success      – bool
+        snapshot_dir – str path to created directory
+        file_count   – int number of files copied
+        name         – str human-readable name used
+        error        – str (only present on failure)
+    """
+    if not snapshot_name:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snapshot_name = f"{entry.name}_{ts}"
+
+    prompts_root_path = Path(prompts_root)
+    snapshot_dir = _build_snapshot_dir(snapshot_name)
+
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=False)
+        copied: list[Path] = []
+
+        base = Path(entry.base_path)
+        if base.is_file():
+            _copy_prompt_file(base, prompts_root_path, snapshot_dir)
+            copied.append(base)
+
+        if entry.active_path:
+            active = Path(entry.active_path)
+            if active.is_file():
+                _copy_prompt_file(active, prompts_root_path, snapshot_dir)
+                copied.append(active)
+
+        scope_path = str(base.relative_to(prompts_root_path)) if base.is_relative_to(prompts_root_path) else str(base)
+        _write_snapshot_meta(
+            snapshot_dir=snapshot_dir,
+            name=snapshot_name,
+            campaign_id=campaign_id,
+            scope_type="file",
+            scope_path=scope_path,
+            file_count=len(copied),
+        )
+
+        return {
+            "success": True,
+            "snapshot_dir": str(snapshot_dir),
+            "file_count": len(copied),
+            "name": snapshot_name,
+        }
+    except Exception as exc:
+        # Clean up partial directory on failure
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+        return {"success": False, "error": str(exc), "name": snapshot_name}
+
+
+def snapshot_from_category(
+    category_key: str,
+    entries: "list[PromptFileEntry]",
+    prompts_root: str,
+    campaign_id: str,
+    snapshot_name: str = "",
+) -> dict:
+    """
+    Create a snapshot of all files in a single category.
+
+    Parameters
+    ----------
+    category_key   : e.g. "actions" or "__root__"
+    entries        : list of PromptFileEntry objects for the category
+    prompts_root   : absolute path to the campaign's prompts/ directory
+    campaign_id    : campaign identifier string
+    snapshot_name  : optional human-readable name; auto-generated if empty
+
+    Returns
+    -------
+    dict with keys: success, snapshot_dir, file_count, name, error (on fail)
+    """
+    if not snapshot_name:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        label = category_key if category_key != "__root__" else "root"
+        snapshot_name = f"{campaign_id}_{label}_{ts}"
+
+    prompts_root_path = Path(prompts_root)
+    snapshot_dir = _build_snapshot_dir(snapshot_name)
+
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=False)
+        copied: list[Path] = []
+
+        for entry in entries:
+            base = Path(entry.base_path)
+            if base.is_file():
+                _copy_prompt_file(base, prompts_root_path, snapshot_dir)
+                copied.append(base)
+            if entry.active_path:
+                active = Path(entry.active_path)
+                if active.is_file():
+                    _copy_prompt_file(active, prompts_root_path, snapshot_dir)
+                    copied.append(active)
+
+        # scope_path: relative category folder (or "." for root)
+        if category_key == "__root__":
+            scope_path = "."
+        else:
+            cat_dir = prompts_root_path / category_key
+            scope_path = category_key if cat_dir.is_dir() else category_key
+
+        _write_snapshot_meta(
+            snapshot_dir=snapshot_dir,
+            name=snapshot_name,
+            campaign_id=campaign_id,
+            scope_type="category",
+            scope_path=scope_path,
+            file_count=len(copied),
+        )
+
+        return {
+            "success": True,
+            "snapshot_dir": str(snapshot_dir),
+            "file_count": len(copied),
+            "name": snapshot_name,
+        }
+    except Exception as exc:
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+        return {"success": False, "error": str(exc), "name": snapshot_name}
+
+
+def snapshot_from_campaign(
+    prompt_index: "PromptIndex",
+    campaign_id: str,
+    snapshot_name: str = "",
+) -> dict:
+    """
+    Create a snapshot of the entire active campaign's prompts/ folder.
+
+    Parameters
+    ----------
+    prompt_index   : a fully scanned PromptIndex for the campaign
+    campaign_id    : campaign identifier string
+    snapshot_name  : optional human-readable name; auto-generated if empty
+
+    Returns
+    -------
+    dict with keys: success, snapshot_dir, file_count, name, error (on fail)
+    """
+    if not snapshot_name:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snapshot_name = f"{campaign_id}_full_{ts}"
+
+    prompts_root = prompt_index.prompts_root
+    prompts_root_path = Path(prompts_root)
+    snapshot_dir = _build_snapshot_dir(snapshot_name)
+
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=False)
+        copied: list[Path] = []
+
+        # Root entries
+        for entry in prompt_index.root_entries:
+            base = Path(entry.base_path)
+            if base.is_file():
+                _copy_prompt_file(base, prompts_root_path, snapshot_dir)
+                copied.append(base)
+
+        # Category entries (all categories)
+        for cat_key, cat_model in prompt_index.categories.items():
+            for entry in cat_model.entries:
+                base = Path(entry.base_path)
+                if base.is_file():
+                    _copy_prompt_file(base, prompts_root_path, snapshot_dir)
+                    copied.append(base)
+                if entry.active_path:
+                    active = Path(entry.active_path)
+                    if active.is_file():
+                        _copy_prompt_file(active, prompts_root_path, snapshot_dir)
+                        copied.append(active)
+
+        _write_snapshot_meta(
+            snapshot_dir=snapshot_dir,
+            name=snapshot_name,
+            campaign_id=campaign_id,
+            scope_type="campaign",
+            scope_path="prompts/",
+            file_count=len(copied),
+        )
+
+        return {
+            "success": True,
+            "snapshot_dir": str(snapshot_dir),
+            "file_count": len(copied),
+            "name": snapshot_name,
+        }
+    except Exception as exc:
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+        return {"success": False, "error": str(exc), "name": snapshot_name}
+
+
+# ===========================================================================
 # Data model
 # ===========================================================================
 
