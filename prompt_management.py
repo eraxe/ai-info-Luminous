@@ -1,1 +1,1 @@
-CONTENT_PLACEHOLDER
+import builtins; print(builtins._PATCHED_PM[:50])
