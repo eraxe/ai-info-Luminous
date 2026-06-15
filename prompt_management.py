@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 """
-Luminous AI — Prompt Management Section
-Full PromptManagementApp. Launched from main.py hub.
+Luminous AI — Prompt Management Section  (Part 1: Foundation)
+PromptManagementApp: campaign discovery, file model, 3-panel layout scaffold.
+No full editor yet — Panel 3 shows selection info only.
 """
-import sys
+import tkinter as tk
+import json
 import os
+import sys
+import platform
+from pathlib import Path
+from typing import Optional
 
 try:
-    import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox, scrolledtext
-    import json
-    import platform
-    import subprocess
-    import shutil
-    import zipfile
-    from datetime import datetime
-    from pathlib import Path
-except Exception as _import_err:
-    import tkinter as _tk
+    from settings import SettingsManager, settings_manager as _global_sm
+except ImportError as _e:
     import tkinter.messagebox as _mb
-    _r = _tk.Tk()
-    _r.withdraw()
-    _mb.showerror("Import Error", f"prompt_management.py failed to load:\n\n{_import_err}")
+    _r = tk.Tk(); _r.withdraw()
+    _mb.showerror("Import Error", f"prompt_management.py: {_e}")
     _r.destroy()
     sys.exit(1)
 
@@ -42,47 +38,301 @@ C = {
     "scrollbar": "#2a2f42",
 }
 
-SETTINGS_PATH = Path(__file__).parent / "luminous_ai" / "settings.json"
-COLLECTIONS_DIR = Path(__file__).parent / "luminous_data" / "collections"
-
-CATEGORIES = [
-    ("actions",                         "▦"),
-    ("character_creation",               "▦"),
-    ("diplomacy_internal_thoughts",      "▦"),
-    ("dynamic_events_generator",         "▦"),
-    ("dynamic_events_internal_thoughts", "▦"),
-    ("group_conversation",               "▦"),
-    ("internal_thoughts",                "▦"),
-    ("json_output",                      "▦"),
-    ("kingdom_statement",                "▦"),
-    ("npc_initiative",                   "▦"),
-    ("rules",                            "▦"),
-    ("world_data",                       "▦"),
-    ("root_files",                       "▦"),
+# Ordered category list (matches prompts/ subfolder names)
+PROMPT_CATEGORIES = [
+    "actions",
+    "character_creation",
+    "diplomacy_internal_thoughts",
+    "dynamic_events_generator",
+    "dynamic_events_internal_thoughts",
+    "group_conversation",
+    "internal_thoughts",
+    "json_output",
+    "kingdom_statement",
+    "npc_initiative",
+    "rules",
+    "world_data",
 ]
 
+# Root-level files that live directly in prompts/
+ROOT_PROMPT_FILES = [
+    "playerdescription.txt",
+    "PromptModuleResponse.txt",
+]
 
-# ---------------------------------------------------------------------------
-# Reusable widgets (matching ai_characters.py style)
-# ---------------------------------------------------------------------------
+CATEGORY_ICONS = {
+    "actions":                        "\u25b6",
+    "character_creation":             "\u25c6",
+    "diplomacy_internal_thoughts":    "\u2666",
+    "dynamic_events_generator":       "\u2734",
+    "dynamic_events_internal_thoughts": "\u2733",
+    "group_conversation":             "\u25a6",
+    "internal_thoughts":              "\u25cb",
+    "json_output":                    "\u2692",
+    "kingdom_statement":              "\u2654",
+    "npc_initiative":                 "\u25cf",
+    "rules":                          "\u2261",
+    "world_data":                     "\u25bb",
+    "__root__":                       "\u2026",
+}
+
+
+# ===========================================================================
+# Data model
+# ===========================================================================
+
+class PromptFileEntry:
+    """
+    Represents one logical prompt file in the file model.
+
+    Paired files (base.txt + base_active.txt) are a single entry.
+    .json files in world_data are a separate entry with kind='json'.
+    """
+    __slots__ = ("name", "base_path", "active_path", "kind", "category")
+
+    def __init__(self, name: str, base_path: str,
+                 active_path: Optional[str],
+                 kind: str,           # 'txt', 'paired', 'json'
+                 category: str):      # category key or '__root__'
+        self.name = name
+        self.base_path = base_path
+        self.active_path = active_path
+        self.kind = kind
+        self.category = category
+
+    @property
+    def display_name(self) -> str:
+        return self.name
+
+    @property
+    def has_active(self) -> bool:
+        return self.active_path is not None
+
+    @property
+    def type_tag(self) -> str:
+        if self.kind == "json":
+            return "JSON"
+        if self.kind == "paired":
+            return "PAIRED"
+        return "TXT"
+
+
+class CategoryModel:
+    """Holds all PromptFileEntry objects for one category."""
+    __slots__ = ("key", "path", "entries", "exists")
+
+    def __init__(self, key: str, path: str):
+        self.key = key
+        self.path = path
+        self.entries: list[PromptFileEntry] = []
+        self.exists: bool = False
+
+    @property
+    def count(self) -> int:
+        return len(self.entries)
+
+
+class PromptIndex:
+    """
+    Full index of all prompts for a single campaign.
+    Build once via scan(); then query via categories / all_entries.
+    """
+
+    def __init__(self):
+        self.campaign_id: str = ""
+        self.prompts_root: str = ""
+        self.categories: dict[str, CategoryModel] = {}
+        self.root_entries: list[PromptFileEntry] = []
+
+    def scan(self, save_data_path: str, campaign_id: str) -> bool:
+        """
+        Scan save_data_path/<campaign_id>/prompts/ and populate the model.
+        Returns True if the prompts folder exists.
+        """
+        self.campaign_id = campaign_id
+        self.prompts_root = os.path.join(save_data_path, campaign_id, "prompts")
+        self.categories = {}
+        self.root_entries = []
+
+        if not os.path.isdir(self.prompts_root):
+            return False
+
+        # scan each category subfolder
+        for cat_key in PROMPT_CATEGORIES:
+            cat_path = os.path.join(self.prompts_root, cat_key)
+            model = CategoryModel(cat_key, cat_path)
+            model.exists = os.path.isdir(cat_path)
+            if model.exists:
+                model.entries = _scan_category_folder(cat_path, cat_key)
+            self.categories[cat_key] = model
+
+        # scan root-level files
+        for fname in ROOT_PROMPT_FILES:
+            fp = os.path.join(self.prompts_root, fname)
+            if os.path.isfile(fp):
+                self.root_entries.append(
+                    PromptFileEntry(
+                        name=fname,
+                        base_path=fp,
+                        active_path=None,
+                        kind="txt",
+                        category="__root__"
+                    )
+                )
+        # also pick up any other loose .txt in prompts root
+        try:
+            for fname in sorted(os.listdir(self.prompts_root)):
+                fp = os.path.join(self.prompts_root, fname)
+                if not os.path.isfile(fp):
+                    continue
+                if fname in ROOT_PROMPT_FILES:
+                    continue
+                if fname.endswith(".txt") and not fname.endswith("_active.txt"):
+                    self.root_entries.append(
+                        PromptFileEntry(
+                            name=fname,
+                            base_path=fp,
+                            active_path=None,
+                            kind="txt",
+                            category="__root__"
+                        )
+                    )
+        except OSError:
+            pass
+
+        return True
+
+    def total_files(self) -> int:
+        n = len(self.root_entries)
+        for cm in self.categories.values():
+            n += cm.count
+        return n
+
+    def entries_for_category(self, key: str) -> list[PromptFileEntry]:
+        if key == "__root__":
+            return list(self.root_entries)
+        cm = self.categories.get(key)
+        return list(cm.entries) if cm else []
+
+
+def _scan_category_folder(folder: str, cat_key: str) -> list[PromptFileEntry]:
+    """
+    Scan a single category folder.
+    Pair base.txt + base_active.txt into one PromptFileEntry(kind='paired').
+    .json files get kind='json'.
+    Standalone .txt (no _active counterpart) get kind='txt'.
+    """
+    entries: list[PromptFileEntry] = []
+    try:
+        all_files = sorted(os.listdir(folder))
+    except OSError:
+        return entries
+
+    seen: set[str] = set()
+    # build set of active stems for fast lookup
+    active_stems: set[str] = set()
+    for fn in all_files:
+        if fn.endswith("_active.txt"):
+            active_stems.add(fn[: -len("_active.txt")])
+
+    for fn in all_files:
+        if fn in seen:
+            continue
+        fp = os.path.join(folder, fn)
+        if not os.path.isfile(fp):
+            continue
+
+        if fn.endswith("_active.txt"):
+            # will be consumed by its base entry
+            seen.add(fn)
+            continue
+
+        if fn.endswith(".json"):
+            entries.append(PromptFileEntry(
+                name=fn,
+                base_path=fp,
+                active_path=None,
+                kind="json",
+                category=cat_key,
+            ))
+            seen.add(fn)
+            continue
+
+        if fn.endswith(".txt"):
+            stem = fn[: -len(".txt")]
+            active_fn = stem + "_active.txt"
+            active_fp = os.path.join(folder, active_fn) if active_fn in set(all_files) else None
+            kind = "paired" if active_fp and os.path.isfile(active_fp) else "txt"
+            entries.append(PromptFileEntry(
+                name=fn,
+                base_path=fp,
+                active_path=active_fp,
+                kind=kind,
+                category=cat_key,
+            ))
+            seen.add(fn)
+            if active_fn in set(all_files):
+                seen.add(active_fn)
+            continue
+
+    return entries
+
+
+# ===========================================================================
+# Campaign discovery
+# ===========================================================================
+
+def discover_campaigns(save_data_path: str) -> list[str]:
+    """
+    Return sorted list of campaign IDs (subfolder names) found under
+    save_data_path. A valid campaign folder must contain a prompts/ subfolder
+    OR at least look like a campaign directory (non-hidden folder).
+    """
+    if not save_data_path or not os.path.isdir(save_data_path):
+        return []
+    campaigns = []
+    try:
+        for entry in sorted(os.listdir(save_data_path)):
+            if entry.startswith("."):
+                continue
+            full = os.path.join(save_data_path, entry)
+            if os.path.isdir(full):
+                campaigns.append(entry)
+    except OSError:
+        pass
+    return campaigns
+
+
+# ===========================================================================
+# Shared widget helpers (no ttk)
+# ===========================================================================
 
 class FlatButton(tk.Label):
-    def __init__(self, parent, text="", command=None, bg=C["surface2"], fg=C["fg"],
-                 hover_bg=C["surface3"], hover_fg=C["accent"], font=("Segoe UI", 9),
-                 padx=12, pady=6, **kw):
-        super().__init__(parent, text=text, bg=bg, fg=fg, font=font, padx=padx, pady=pady,
-                         cursor="hand2", **kw)
+    def __init__(self, parent, text="", command=None,
+                 bg=C["surface2"], fg=C["fg"],
+                 hover_bg=C["surface3"], hover_fg=C["accent"],
+                 font=("Segoe UI", 9), padx=12, pady=6, **kw):
+        super().__init__(parent, text=text, bg=bg, fg=fg, font=font,
+                         padx=padx, pady=pady, cursor="hand2", **kw)
         self._bg, self._fg = bg, fg
         self._hbg, self._hfg = hover_bg, hover_fg
         self._cmd = command
-        self.bind("<Enter>",    lambda e: self.config(bg=self._hbg, fg=self._hfg))
-        self.bind("<Leave>",    lambda e: self.config(bg=self._bg,  fg=self._fg))
-        self.bind("<Button-1>", lambda e: self.after(50, self._cmd) if self._cmd else None)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+
+    def _on_enter(self, _=None): self.config(bg=self._hbg, fg=self._hfg)
+    def _on_leave(self, _=None): self.config(bg=self._bg, fg=self._fg)
+    def _on_click(self, _=None):
+        self._on_enter()
+        if self._cmd:
+            self.after(50, self._cmd)
 
 
 class AccentButton(FlatButton):
     def __init__(self, parent, text="", command=None, **kw):
-        super().__init__(parent, text=text, command=command, bg=C["accent"], fg="#ffffff",
+        super().__init__(parent, text=text, command=command,
+                         bg=C["accent"], fg="#ffffff",
                          hover_bg="#9580ff", hover_fg="#ffffff",
                          font=("Segoe UI", 9, "bold"), **kw)
 
@@ -91,8 +341,8 @@ class StatusBar(tk.Frame):
     def __init__(self, parent, **kw):
         super().__init__(parent, bg=C["surface"], height=26, **kw)
         self.pack_propagate(False)
-        self._dot = tk.Label(self, text="●", bg=C["surface"], fg=C["green"],
-                             font=("Segoe UI", 8))
+        self._dot = tk.Label(self, text="\u25cf", bg=C["surface"], fg=C["green"],
+                             font=("Segoe UI", 9))
         self._dot.pack(side=tk.LEFT, padx=(10, 4))
         self._msg = tk.Label(self, text="Ready", bg=C["surface"], fg=C["fg_dim"],
                              font=("Segoe UI", 9), anchor="w")
@@ -100,8 +350,8 @@ class StatusBar(tk.Frame):
         self._timer = None
 
     def set(self, msg, level="ok"):
-        color = {"ok": C["green"], "warn": C["accent3"], "error": C["red"],
-                 "info": C["accent2"]}.get(level, C["green"])
+        color = {"ok": C["green"], "warn": C["accent3"],
+                 "error": C["red"], "info": C["accent2"]}.get(level, C["green"])
         self._dot.config(fg=color)
         self._msg.config(text=msg, fg=C["fg"])
         if self._timer:
@@ -109,100 +359,9 @@ class StatusBar(tk.Frame):
         self._timer = self.after(5000, lambda: self._msg.config(text="Ready", fg=C["fg_dim"]))
 
 
-class VirtualList(tk.Frame):
-    """
-    Canvas-based virtual list that handles thousands of rows without creating
-    per-row widgets. Row height is fixed. Supports selection + click callback.
-    """
-    ROW_H = 26
-
-    def __init__(self, parent, on_select=None, bg=C["surface2"], **kw):
-        super().__init__(parent, bg=bg, **kw)
-        self._on_select = on_select
-        self._bg = bg
-        self._items = []          # list of (label, fg_color, tag)
-        self._sel_idx = -1
-        self._canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
-        self._sb = tk.Scrollbar(self, orient="vertical", command=self._canvas.yview,
-                                bg=C["scrollbar"], troughcolor=C["bg"], width=6)
-        self._canvas.configure(yscrollcommand=self._sb.set)
-        self._sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._canvas.bind("<Configure>",    self._on_resize)
-        self._canvas.bind("<Button-1>",     self._on_click)
-        self._canvas.bind("<MouseWheel>",   self._on_wheel)
-        self._canvas.bind("<Button-4>",     lambda e: self._canvas.yview_scroll(-1, "units"))
-        self._canvas.bind("<Button-5>",     lambda e: self._canvas.yview_scroll(1, "units"))
-        self._width = 260
-
-    def set_items(self, items):
-        """items: list of (label_text, fg_color, tag_data)"""
-        self._items = items
-        self._sel_idx = -1
-        self._redraw()
-
-    def get_selected_tag(self):
-        if 0 <= self._sel_idx < len(self._items):
-            return self._items[self._sel_idx][2]
-        return None
-
-    def select_index(self, idx):
-        self._sel_idx = idx
-        self._redraw()
-        if 0 <= idx < len(self._items):
-            y = idx * self.ROW_H
-            total = len(self._items) * self.ROW_H
-            self._canvas.yview_moveto(y / max(total, 1))
-
-    def _on_resize(self, e):
-        self._width = e.width
-        self._redraw()
-
-    def _on_wheel(self, e):
-        self._canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
-
-    def _on_click(self, e):
-        idx = int(self._canvas.canvasy(e.y) // self.ROW_H)
-        if 0 <= idx < len(self._items):
-            self._sel_idx = idx
-            self._redraw()
-            if self._on_select:
-                self._on_select(self._items[idx][2])
-
-    def _redraw(self):
-        self._canvas.delete("all")
-        h = self.ROW_H
-        w = self._width
-        total_h = max(len(self._items) * h, 1)
-        self._canvas.configure(scrollregion=(0, 0, w, total_h))
-        # Only draw visible rows
-        try:
-            top_frac = self._canvas.yview()[0]
-        except Exception:
-            top_frac = 0
-        top_px = int(top_frac * total_h)
-        vis_start = max(0, top_px // h - 1)
-        vis_end   = min(len(self._items), vis_start + (400 // h) + 4)
-        for i in range(vis_start, vis_end):
-            label, fg, _ = self._items[i]
-            y0 = i * h
-            bg = C["accent"] if i == self._sel_idx else self._bg
-            tfg = "#ffffff" if i == self._sel_idx else fg
-            self._canvas.create_rectangle(0, y0, w, y0 + h, fill=bg, outline="")
-            self._canvas.create_text(10, y0 + h // 2, text=label, anchor="w",
-                                     fill=tfg, font=("Segoe UI", 9))
-        # Bind scroll to trigger redraw
-        self._canvas.bind("<MouseWheel>", self._scroll_and_redraw)
-        self._sb.config(command=self._scroll_cmd)
-
-    def _scroll_cmd(self, *args):
-        self._canvas.yview(*args)
-        self._redraw()
-
-    def _scroll_and_redraw(self, e):
-        self._canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
-        self._redraw()
-
+# ===========================================================================
+# CustomTitleBar  (section variant)
+# ===========================================================================
 
 class CustomTitleBar(tk.Frame):
     def __init__(self, parent, app, title=""):
@@ -212,33 +371,34 @@ class CustomTitleBar(tk.Frame):
         self.root = app.root
         self._is_max = False
         self.bind("<ButtonPress-1>", self._start_move)
-        self.bind("<B1-Motion>",     self._do_move)
-        self.bind("<Double-Button-1>", lambda e: self._toggle_max())
+        self.bind("<B1-Motion>", self._do_move)
 
-        back = tk.Label(self, text="⬡ Hub", bg=C["bg"], fg=C["fg_muted"],
+        back = tk.Label(self, text="\u2b21 Hub", bg=C["bg"], fg=C["fg_muted"],
                         font=("Segoe UI", 8), padx=10, pady=6, cursor="hand2")
         back.pack(side=tk.LEFT)
-        back.bind("<Enter>",    lambda e: back.config(fg=C["accent"]))
-        back.bind("<Leave>",    lambda e: back.config(fg=C["fg_muted"]))
+        back.bind("<Enter>", lambda e: back.config(fg=C["accent"]))
+        back.bind("<Leave>", lambda e: back.config(fg=C["fg_muted"]))
         back.bind("<Button-1>", lambda e: app.back_to_hub())
 
-        tk.Frame(self, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8), pady=6)
-
+        tk.Frame(self, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y,
+                                                     padx=(0, 8), pady=6)
         lbl = tk.Label(self, text=f" {title}", bg=C["bg"], fg=C["fg_dim"],
                        font=("Segoe UI", 9, "bold"))
         lbl.pack(side=tk.LEFT, padx=4)
         lbl.bind("<ButtonPress-1>", self._start_move)
-        lbl.bind("<B1-Motion>",     self._do_move)
+        lbl.bind("<B1-Motion>", self._do_move)
 
         btns = tk.Frame(self, bg=C["bg"])
         btns.pack(side=tk.RIGHT, fill=tk.Y)
-        FlatButton(btns, text="—", command=self._minimize,
+        FlatButton(btns, text="\u2014", command=self._minimize,
                    bg=C["bg"], hover_bg=C["surface3"], padx=14).pack(side=tk.LEFT, fill=tk.Y)
-        self._max_btn = FlatButton(btns, text="☐", command=self._toggle_max,
+        self._max_btn = FlatButton(btns, text="\u2610", command=self._toggle_max,
                                    bg=C["bg"], hover_bg=C["surface3"], padx=14)
         self._max_btn.pack(side=tk.LEFT, fill=tk.Y)
-        FlatButton(btns, text="✕", command=lambda: self.root.event_generate("WM_DELETE_WINDOW"),
-                   bg=C["bg"], hover_bg=C["red"], hover_fg="#fff", padx=14).pack(side=tk.LEFT, fill=tk.Y)
+        FlatButton(btns, text="\u2715",
+                   command=lambda: self.root.event_generate("WM_DELETE_WINDOW"),
+                   bg=C["bg"], hover_bg=C["red"], hover_fg="#fff",
+                   padx=14).pack(side=tk.LEFT, fill=tk.Y)
 
     def _start_move(self, e):
         if not self._is_max:
@@ -254,1535 +414,751 @@ class CustomTitleBar(tk.Frame):
         if platform.system() == "Windows":
             self.root.overrideredirect(False)
             self.root.iconify()
-            self.root.bind("<Map>", self._on_map)
+            self.root.bind("<Map>", lambda e: (
+                self.root.overrideredirect(True), self.root.unbind("<Map>")))
         else:
             self.root.iconify()
-
-    def _on_map(self, e):
-        if e.widget == self.root:
-            self.root.overrideredirect(True)
-            self.root.unbind("<Map>")
 
     def _toggle_max(self):
         if self._is_max:
             self.root.geometry(self._norm_geo)
             self._is_max = False
-            self._max_btn.config(text="☐")
+            self._max_btn.config(text="\u2610")
         else:
             self._norm_geo = self.root.geometry()
             sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
             self.root.geometry(f"{sw}x{sh}+0+0")
             self._is_max = True
-            self._max_btn.config(text="❐")
+            self._max_btn.config(text="\u2750")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# VirtualList — Canvas-based virtualised file list for Panel 2
+# ===========================================================================
 
-def _load_settings():
-    defaults = {
-        "save_data_path": "",
-        "last_campaign":  "",
-        "readonly_mode":  False,
-        "ui_font_family": "Segoe UI",
-        "ui_font_size":   10,
-        "code_font_family": "Consolas",
-        "code_font_size": 10,
-    }
-    try:
-        if SETTINGS_PATH.exists():
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            defaults.update(data)
-    except Exception:
-        pass
-    return defaults
+ROW_H = 38          # pixel height per row
+ROW_PAD_X = 10     # left padding
+
+TYPE_COLORS = {
+    "TXT":    C["fg_dim"],
+    "PAIRED": C["accent2"],
+    "JSON":   C["accent3"],
+}
 
 
-def _save_settings(cfg: dict):
-    try:
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = str(SETTINGS_PATH) + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, str(SETTINGS_PATH))
-    except Exception:
-        pass
-
-
-def _prompts_dir(save_data_root: str, campaign_id: str) -> Path:
-    return Path(save_data_root) / campaign_id / "prompts"
-
-
-def _list_campaigns(save_data_root: str):
-    p = Path(save_data_root)
-    if not p.exists():
-        return []
-    return sorted([d.name for d in p.iterdir() if d.is_dir()])
-
-
-def _category_path(prompts: Path, cat: str) -> Path:
-    if cat == "root_files":
-        return prompts
-    return prompts / cat
-
-
-def _list_category_files(prompts: Path, cat: str):
+class VirtualFileList(tk.Frame):
     """
-    Returns list of dicts:
-      { 'label', 'path', 'pair_path', 'is_active_pair', 'ftype' }
-    For actions/ _active pairs, only one entry is emitted (the base).
+    Canvas-based virtual list for PromptFileEntry rows.
+    Only renders rows within the visible viewport.
+    Supports select callback, search filtering, and external data reload.
     """
-    p = _category_path(prompts, cat)
-    if not p.exists():
-        return []
-    try:
-        all_files = sorted(p.iterdir(), key=lambda x: x.name.lower())
-    except Exception:
-        return []
 
-    if cat == "root_files":
-        all_files = [f for f in all_files if f.is_file()]
-    else:
-        all_files = [f for f in all_files if f.is_file()]
-
-    seen = set()
-    result = []
-    for f in all_files:
-        if f.name in seen:
-            continue
-        if f.suffix == ".json":
-            result.append({
-                "label":        f.name,
-                "path":         f,
-                "pair_path":    None,
-                "is_active_pair": False,
-                "ftype":        "json",
-            })
-            seen.add(f.name)
-        elif f.name.endswith("_active.txt"):
-            # skip — will be picked up with base
-            seen.add(f.name)
-        elif f.name.endswith(".txt"):
-            base_name = f.name
-            active_name = base_name[:-4] + "_active.txt"
-            active_path = p / active_name
-            is_pair = active_path.exists()
-            result.append({
-                "label":        base_name,
-                "path":         f,
-                "pair_path":    active_path if is_pair else None,
-                "is_active_pair": is_pair,
-                "ftype":        "txt_pair" if is_pair else "txt",
-            })
-            seen.add(base_name)
-            if is_pair:
-                seen.add(active_name)
-    return result
-
-
-def _file_count(prompts: Path, cat: str) -> int:
-    return len(_list_category_files(prompts, cat))
-
-
-def _make_backup(file_path: Path):
-    bak_dir = file_path.parent.parent / ".bak"
-    bak_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bak_name = f"{file_path.stem}_{ts}{file_path.suffix}"
-    shutil.copy2(str(file_path), str(bak_dir / bak_name))
-
-
-def _open_explorer(path: Path):
-    folder = path if path.is_dir() else path.parent
-    if platform.system() == "Windows":
-        os.startfile(str(folder))
-    elif platform.system() == "Darwin":
-        subprocess.Popen(["open", str(folder)])
-    else:
-        subprocess.Popen(["xdg-open", str(folder)])
-
-
-# ---------------------------------------------------------------------------
-# Collections helpers
-# ---------------------------------------------------------------------------
-
-def _save_snapshot(name: str, campaign_id: str, scope_path: Path,
-                   prompts_root: Path, status_cb=None):
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = "".join(c for c in name if c.isalnum() or c in " _-").strip().replace(" ", "_")
-    dest = COLLECTIONS_DIR / f"{safe_name}_{ts}"
-    dest.mkdir(parents=True, exist_ok=True)
-    # Write metadata
-    meta = {
-        "name":       name,
-        "timestamp":  ts,
-        "campaign":   campaign_id,
-        "scope":      str(scope_path.relative_to(prompts_root.parent.parent))
-                       if prompts_root.parent.parent in scope_path.parents or scope_path == prompts_root
-                       else str(scope_path),
-        "file_count": 0,
-    }
-    count = 0
-    if scope_path.is_file():
-        target = dest / scope_path.name
-        shutil.copy2(str(scope_path), str(target))
-        count = 1
-    else:
-        for root_dir, dirs, files in os.walk(str(scope_path)):
-            rel = Path(root_dir).relative_to(scope_path)
-            for fn in files:
-                src = Path(root_dir) / fn
-                tgt_dir = dest / rel
-                tgt_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(src), str(tgt_dir / fn))
-                count += 1
-    meta["file_count"] = count
-    with open(str(dest / "metadata.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-    if status_cb:
-        status_cb(f"Snapshot '{name}' saved ({count} files)", "ok")
-    return dest
-
-
-def _list_collections():
-    if not COLLECTIONS_DIR.exists():
-        return []
-    result = []
-    for d in sorted(COLLECTIONS_DIR.iterdir()):
-        if not d.is_dir():
-            continue
-        meta_path = d / "metadata.json"
-        if meta_path.exists():
-            try:
-                with open(str(meta_path), "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                meta["_dir"] = d
-                result.append(meta)
-            except Exception:
-                pass
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Main App
-# ---------------------------------------------------------------------------
-
-class PromptManagementApp:
-
-    def __init__(self, root, on_close=None):
-        self.root = root
-        self._on_close = on_close
-        self.root.overrideredirect(True)
-        self.root.configure(bg=C["border"])
-        self.root.geometry("1280x820")
-        self.root.minsize(900, 600)
-
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry(f"1280x820+{(sw-1280)//2}+{(sh-820)//2}")
-
-        self._settings = _load_settings()
-        self._campaign_id = self._settings.get("last_campaign", "")
-        self._readonly = self._settings.get("readonly_mode", False)
-        self._current_cat = ""
-        self._current_file_info = None   # dict from _list_category_files
-        self._active_variant = "base"    # "base" or "active"
-        self._unsaved = False
-        self._search_mode = False        # True = panel2 showing search results
-        self._search_results = []        # list of (display, file_path, line_no, line_text)
-        self._collections_open = False
-        self._json_kv_rows = []          # for json key-value editor
-
-        self._app_frame = tk.Frame(self.root, bg=C["bg"],
-                                   highlightbackground=C["border"], highlightthickness=1)
-        self._app_frame.pack(fill=tk.BOTH, expand=True)
-
-        self._build_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self._on_wm_close)
-        self.root.after(50, self._auto_load)
-
-    # ------------------------------------------------------------------
-    # Hub integration
-    # ------------------------------------------------------------------
-
-    def back_to_hub(self):
-        self._save_settings_state()
-        self.root.destroy()
-        if self._on_close:
-            self._on_close()
-
-    def _on_wm_close(self):
-        self._save_settings_state()
-        self.root.destroy()
-
-    def _save_settings_state(self):
-        self._settings["last_campaign"] = self._campaign_id
-        self._settings["readonly_mode"] = self._readonly
-        _save_settings(self._settings)
-
-    def minimize(self):
-        if platform.system() == "Windows":
-            self.root.overrideredirect(False)
-            self.root.iconify()
-            self.root.bind("<Map>", self._on_map)
-        else:
-            self.root.iconify()
-
-    def _on_map(self, e):
-        if e.widget == self.root:
-            self.root.overrideredirect(True)
-            self.root.unbind("<Map>")
-
-    # ------------------------------------------------------------------
-    # Build UI
-    # ------------------------------------------------------------------
-
-    def _build_ui(self):
-        self._title_bar = CustomTitleBar(self._app_frame, self, "Prompt Management")
-        self._title_bar.pack(fill=tk.X)
-
-        self._toolbar = self._build_toolbar(self._app_frame)
-        self._toolbar.pack(fill=tk.X)
-
-        tk.Frame(self._app_frame, bg=C["border"], height=1).pack(fill=tk.X)
-
-        body = tk.Frame(self._app_frame, bg=C["bg"])
-        body.pack(fill=tk.BOTH, expand=True)
-        body.columnconfigure(2, weight=1)
-        body.rowconfigure(0, weight=1)
-
-        # Panel 1 — Sidebar
-        self._sidebar = tk.Frame(body, bg=C["surface"], width=220)
-        self._sidebar.grid(row=0, column=0, sticky="ns")
-        self._sidebar.grid_propagate(False)
-        self._build_sidebar(self._sidebar)
-
-        tk.Frame(body, bg=C["border"], width=1).grid(row=0, column=1, sticky="ns")
-
-        # Panel 2 — File List
-        self._panel2 = tk.Frame(body, bg=C["surface2"], width=260)
-        self._panel2.grid(row=0, column=2, sticky="ns")
-        self._panel2.grid_propagate(False)
-        self._build_panel2(self._panel2)
-
-        tk.Frame(body, bg=C["border"], width=1).grid(row=0, column=3, sticky="ns")
-
-        # Panel 3 — Editor
-        self._panel3_outer = tk.Frame(body, bg=C["bg"])
-        self._panel3_outer.grid(row=0, column=4, sticky="nsew")
-        body.columnconfigure(4, weight=1)
-        self._build_panel3(self._panel3_outer)
-
-        # Collections drawer (hidden by default)
-        self._collections_frame = tk.Frame(self._app_frame, bg=C["surface"],
-                                           highlightbackground=C["border"], highlightthickness=1)
-        self._build_collections_panel(self._collections_frame)
-
-        self.status = StatusBar(self._app_frame)
-        self.status.pack(fill=tk.X, side=tk.BOTTOM)
-
-    # ------------------------------------------------------------------
-    # Toolbar
-    # ------------------------------------------------------------------
-
-    def _build_toolbar(self, parent):
-        bar = tk.Frame(parent, bg=C["surface"], height=36)
-        bar.pack_propagate(False)
-
-        FlatButton(bar, text="▦ Collections", command=self._toggle_collections,
-                   bg=C["surface"], fg=C["fg_dim"], hover_bg=C["surface2"],
-                   hover_fg=C["accent"], font=("Segoe UI", 9), padx=14, pady=6).pack(side=tk.LEFT)
-
-        FlatButton(bar, text="⌕ Search All", command=self._open_full_search,
-                   bg=C["surface"], fg=C["fg_dim"], hover_bg=C["surface2"],
-                   hover_fg=C["accent2"], font=("Segoe UI", 9), padx=14, pady=6).pack(side=tk.LEFT)
-
-        FlatButton(bar, text="⬎ Copy Structure", command=self._open_copy_structure,
-                   bg=C["surface"], fg=C["fg_dim"], hover_bg=C["surface2"],
-                   hover_fg=C["accent3"], font=("Segoe UI", 9), padx=14, pady=6).pack(side=tk.LEFT)
-
-        FlatButton(bar, text="↗ Export ZIP", command=self._export_zip,
-                   bg=C["surface"], fg=C["fg_dim"], hover_bg=C["surface2"],
-                   hover_fg=C["green"], font=("Segoe UI", 9), padx=14, pady=6).pack(side=tk.LEFT)
-
-        tk.Frame(bar, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, pady=6)
-
-        self._readonly_lbl = FlatButton(bar, text="◯ Read-only: OFF",
-                                        command=self._toggle_readonly,
-                                        bg=C["surface"], fg=C["fg_muted"],
-                                        hover_bg=C["surface2"], hover_fg=C["fg"],
-                                        font=("Segoe UI", 8), padx=12, pady=6)
-        self._readonly_lbl.pack(side=tk.RIGHT)
-        self._update_readonly_indicator()
-        return bar
-
-    def _update_readonly_indicator(self):
-        if self._readonly:
-            self._readonly_lbl.config(text="🔒 Read-only: ON", fg=C["accent3"])
-        else:
-            self._readonly_lbl.config(text="◯ Read-only: OFF", fg=C["fg_muted"])
-
-    def _toggle_readonly(self):
-        self._readonly = not self._readonly
-        self._update_readonly_indicator()
-        self._update_editor_state()
-        self.status.set(f"Read-only {'enabled' if self._readonly else 'disabled'}", "info")
-
-    # ------------------------------------------------------------------
-    # Sidebar (Panel 1)
-    # ------------------------------------------------------------------
-
-    def _build_sidebar(self, parent):
-        tk.Label(parent, text="CAMPAIGN", bg=C["surface"], fg=C["fg_muted"],
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
-
-        self._campaign_var = tk.StringVar()
-        self._campaign_cb = ttk.Combobox(parent, textvariable=self._campaign_var,
-                                         state="readonly", width=22,
-                                         font=("Segoe UI", 9))
-        self._campaign_cb.pack(fill=tk.X, padx=10, pady=(0, 8))
-        self._campaign_cb.bind("<<ComboboxSelected>>", self._on_campaign_change)
-
-        tk.Frame(parent, bg=C["border"], height=1).pack(fill=tk.X)
-
-        tk.Label(parent, text="CATEGORIES", bg=C["surface"], fg=C["fg_muted"],
-                 font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
-
-        cat_outer = tk.Frame(parent, bg=C["surface"])
-        cat_outer.pack(fill=tk.BOTH, expand=True)
-
-        cat_canvas = tk.Canvas(cat_outer, bg=C["surface"], highlightthickness=0, bd=0)
-        cat_sb = tk.Scrollbar(cat_outer, orient="vertical", command=cat_canvas.yview,
-                              bg=C["scrollbar"], troughcolor=C["bg"], width=5)
-        cat_canvas.configure(yscrollcommand=cat_sb.set)
-        cat_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        cat_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self._cat_inner = tk.Frame(cat_canvas, bg=C["surface"])
-        win_id = cat_canvas.create_window((0, 0), window=self._cat_inner, anchor="nw")
-        cat_canvas.bind("<Configure>", lambda e: cat_canvas.itemconfig(win_id, width=e.width))
-        self._cat_inner.bind("<Configure>",
-                             lambda e: cat_canvas.configure(scrollregion=cat_canvas.bbox("all")))
-        cat_canvas.bind_all("<MouseWheel>",
-                            lambda e: cat_canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
-
-        self._cat_btns = {}
-
-    def _populate_category_tree(self):
-        for w in self._cat_inner.winfo_children():
-            w.destroy()
-        self._cat_btns = {}
-        if not self._campaign_id:
-            return
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root:
-            return
-        prompts = _prompts_dir(save_root, self._campaign_id)
-
-        for cat, icon in CATEGORIES:
-            count = _file_count(prompts, cat) if prompts.exists() else 0
-            row = tk.Frame(self._cat_inner, bg=C["surface"], cursor="hand2")
-            row.pack(fill=tk.X)
-            ind = tk.Frame(row, bg=C["surface"], width=3)
-            ind.pack(side=tk.LEFT, fill=tk.Y)
-            lbl = tk.Label(row, text=f" {icon}  {cat}", bg=C["surface"], fg=C["fg_dim"],
-                           font=("Segoe UI", 9), anchor="w")
-            lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=6, padx=4)
-            badge = tk.Label(row, text=str(count), bg=C["surface"], fg=C["fg_muted"],
-                             font=("Segoe UI", 8), padx=6)
-            badge.pack(side=tk.RIGHT)
-            self._cat_btns[cat] = (row, ind, lbl, badge)
-
-            def _click(c=cat):
-                self._select_category(c)
-
-            for w in (row, lbl, badge, ind):
-                w.bind("<Button-1>", lambda e, c=cat: self._select_category(c))
-                w.bind("<Enter>",    lambda e, r=row, l=lbl: (
-                    r.config(bg=C["surface2"]), l.config(bg=C["surface2"])))
-                w.bind("<Leave>",    lambda e, r=row, l=lbl, c=cat: (
-                    r.config(bg=C["surface"] if self._current_cat != c else C["surface3"]),
-                    l.config(bg=C["surface"] if self._current_cat != c else C["surface3"])))
-
-    def _select_category(self, cat):
-        self._current_cat = cat
-        self._search_mode = False
-        for c, (row, ind, lbl, badge) in self._cat_btns.items():
-            active = c == cat
-            bg = C["surface3"] if active else C["surface"]
-            for w in (row, lbl, badge):
-                w.config(bg=bg)
-            ind.config(bg=C["accent"] if active else C["surface"])
-            lbl.config(fg=C["fg"] if active else C["fg_dim"])
-        self._load_file_list()
-
-    # ------------------------------------------------------------------
-    # Panel 2 — file list
-    # ------------------------------------------------------------------
-
-    def _build_panel2(self, parent):
-        search_row = tk.Frame(parent, bg=C["surface"])
-        search_row.pack(fill=tk.X, padx=8, pady=6)
-        tk.Label(search_row, text="⌕", bg=C["surface"], fg=C["fg_muted"],
-                 font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(4, 2))
-        self._file_search_var = tk.StringVar()
-        self._file_search_var.trace("w", lambda *a: self._on_file_search())
-        ttk.Entry(search_row, textvariable=self._file_search_var,
-                  font=("Segoe UI", 9), width=20).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self._panel2_header = tk.Label(parent, text="", bg=C["surface2"], fg=C["fg_muted"],
-                                       font=("Segoe UI", 8, "bold"), anchor="w")
-        self._panel2_header.pack(fill=tk.X, padx=8, pady=(0, 2))
-
-        list_frame = tk.Frame(parent, bg=C["surface2"])
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
-        self._file_list = VirtualList(list_frame, on_select=self._on_file_select,
-                                      bg=C["surface2"])
-        self._file_list.pack(fill=tk.BOTH, expand=True)
-
-        self._panel2_file_infos = []   # parallel list to VirtualList items
-
-    def _load_file_list(self, filter_text=""):
-        if not self._campaign_id:
-            self._file_list.set_items([])
-            return
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root:
-            self._file_list.set_items([])
-            return
-        prompts = _prompts_dir(save_root, self._campaign_id)
-        infos = _list_category_files(prompts, self._current_cat)
-        if filter_text:
-            infos = [i for i in infos if filter_text.lower() in i["label"].lower()]
-
-        items = []
-        self._panel2_file_infos = []
-        for info in infos:
-            if info["ftype"] == "json":
-                fg = C["accent2"]
-                label = info["label"]
-            elif info["ftype"] == "txt_pair":
-                fg = C["green"]
-                label = f"● {info['label']}"
-            else:
-                fg = C["fg"]
-                label = info["label"]
-            items.append((label, fg, info["label"]))
-            self._panel2_file_infos.append(info)
-
-        self._file_list.set_items(items)
-        self._panel2_header.config(text=f"  {self._current_cat}  ({len(items)} files)")
-        self.status.set(f"{len(items)} files in '{self._current_cat}'", "info")
-
-    def _on_file_search(self):
-        if self._search_mode:
-            return
-        self._load_file_list(self._file_search_var.get())
-
-    def _on_file_select(self, label_key):
-        # find matching info
-        for info in self._panel2_file_infos:
-            if info["label"] == label_key or f"● {info['label']}" == label_key:
-                self._open_file(info)
-                return
-
-    # search result click
-    def _on_search_result_select(self, idx):
-        if 0 <= idx < len(self._search_results):
-            _, fpath, line_no, _ = self._search_results[idx]
-            info = {
-                "label":          fpath.name,
-                "path":           fpath,
-                "pair_path":      None,
-                "is_active_pair": False,
-                "ftype":          "txt",
-            }
-            self._open_file(info, scroll_to_line=line_no)
-
-    # ------------------------------------------------------------------
-    # Panel 3 — editor
-    # ------------------------------------------------------------------
-
-    def _build_panel3(self, parent):
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
-
-        # Header
-        hdr = tk.Frame(parent, bg=C["surface"], height=56)
-        hdr.grid(row=0, column=0, sticky="ew")
-        hdr.grid_propagate(False)
-        hdr.columnconfigure(1, weight=1)
-
-        self._editor_title = tk.Label(hdr, text="Select a file", bg=C["surface"],
-                                      fg=C["fg"], font=("Segoe UI", 13, "bold"), anchor="w")
-        self._editor_title.grid(row=0, column=0, columnspan=2, sticky="w", padx=18, pady=(10, 0))
-        self._editor_meta = tk.Label(hdr, text="", bg=C["surface"], fg=C["fg_muted"],
-                                     font=("Segoe UI", 8), anchor="w")
-        self._editor_meta.grid(row=1, column=0, columnspan=2, sticky="w", padx=18, pady=(0, 6))
-
-        # Toggle bar (base/active + json/raw toggles)
-        self._toggle_bar = tk.Frame(parent, bg=C["bg"], height=30)
-        self._toggle_bar.grid(row=1, column=0, sticky="ew")
-        self._toggle_bar.grid_propagate(False)
-        parent.rowconfigure(1, weight=0)
-        parent.rowconfigure(2, weight=1)
-
-        self._variant_frame = tk.Frame(self._toggle_bar, bg=C["bg"])
-        self._variant_frame.pack(side=tk.LEFT, padx=8)
-        self._base_btn  = FlatButton(self._variant_frame, text="Base",
-                                     command=lambda: self._set_variant("base"),
-                                     bg=C["accent"], fg="#fff", hover_bg=C["accent"],
-                                     hover_fg="#fff", font=("Segoe UI", 8, "bold"),
-                                     padx=10, pady=3)
-        self._active_btn = FlatButton(self._variant_frame, text="Active",
-                                      command=lambda: self._set_variant("active"),
-                                      bg=C["surface3"], fg=C["fg_dim"],
-                                      hover_bg=C["surface3"], hover_fg=C["fg"],
-                                      font=("Segoe UI", 8), padx=10, pady=3)
-        self._base_btn.pack(side=tk.LEFT)
-        self._active_btn.pack(side=tk.LEFT, padx=(2, 0))
-        self._variant_frame.pack_forget()
-
-        self._json_toggle_frame = tk.Frame(self._toggle_bar, bg=C["bg"])
-        self._json_toggle_frame.pack(side=tk.LEFT, padx=8)
-        self._json_kv_btn  = FlatButton(self._json_toggle_frame, text="Form",
-                                        command=lambda: self._set_json_mode("kv"),
-                                        bg=C["accent"], fg="#fff",
-                                        hover_bg=C["accent"], hover_fg="#fff",
-                                        font=("Segoe UI", 8, "bold"), padx=10, pady=3)
-        self._json_raw_btn = FlatButton(self._json_toggle_frame, text="Raw JSON",
-                                        command=lambda: self._set_json_mode("raw"),
-                                        bg=C["surface3"], fg=C["fg_dim"],
-                                        hover_bg=C["surface3"], hover_fg=C["fg"],
-                                        font=("Segoe UI", 8), padx=10, pady=3)
-        self._json_kv_btn.pack(side=tk.LEFT)
-        self._json_raw_btn.pack(side=tk.LEFT, padx=(2, 0))
-        self._json_toggle_frame.pack_forget()
-
-        # Unsaved dot
-        self._unsaved_dot = tk.Label(self._toggle_bar, text="● unsaved",
-                                     bg=C["bg"], fg=C["accent3"],
-                                     font=("Segoe UI", 8))
-
-        # Editor area (stacked frames)
-        editor_area = tk.Frame(parent, bg=C["bg"])
-        editor_area.grid(row=2, column=0, sticky="nsew")
-        editor_area.columnconfigure(0, weight=1)
-        editor_area.rowconfigure(0, weight=1)
-
-        # Plain text editor
-        self._txt_editor = scrolledtext.ScrolledText(
-            editor_area, wrap=tk.WORD,
-            font=(self._settings.get("code_font_family", "Consolas"),
-                  self._settings.get("code_font_size", 10)),
-            bg=C["surface"], fg=C["fg"], insertbackground=C["accent"],
-            selectbackground=C["accent"], selectforeground="#fff",
-            borderwidth=0, highlightthickness=0, padx=16, pady=12
-        )
-        self._txt_editor.vbar.config(bg=C["scrollbar"], troughcolor=C["bg"], width=8,
-                                     relief="flat", bd=0)
-        self._txt_editor.bind("<<Modified>>", self._on_txt_modified)
-        self._txt_editor.grid(row=0, column=0, sticky="nsew")
-
-        # JSON KV editor
-        self._kv_outer = tk.Frame(editor_area, bg=C["surface"])
-        self._kv_canvas = tk.Canvas(self._kv_outer, bg=C["surface"],
-                                    highlightthickness=0, bd=0)
-        kv_sb = tk.Scrollbar(self._kv_outer, orient="vertical", command=self._kv_canvas.yview,
-                             bg=C["scrollbar"], troughcolor=C["bg"], width=6)
-        self._kv_canvas.configure(yscrollcommand=kv_sb.set)
-        kv_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._kv_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._kv_inner = tk.Frame(self._kv_canvas, bg=C["surface"])
-        kv_win = self._kv_canvas.create_window((0, 0), window=self._kv_inner, anchor="nw")
-        self._kv_canvas.bind("<Configure>",
-                             lambda e: self._kv_canvas.itemconfig(kv_win, width=e.width))
-        self._kv_inner.bind("<Configure>",
-                            lambda e: self._kv_canvas.configure(
-                                scrollregion=self._kv_canvas.bbox("all")))
-        self._kv_outer.grid(row=0, column=0, sticky="nsew")
-        self._kv_outer.grid_remove()
-
-        # Action buttons
-        act = tk.Frame(parent, bg=C["surface"], height=42)
-        act.grid(row=3, column=0, sticky="ew")
-        act.grid_propagate(False)
-        parent.rowconfigure(3, weight=0)
-
-        self._save_btn = AccentButton(act, text="✔ Save", command=self._save_file,
-                                      padx=14, pady=4)
-        self._save_btn.pack(side=tk.LEFT, padx=(12, 4), pady=6)
-
-        FlatButton(act, text="↺ Reset", command=self._reset_file,
-                   bg=C["surface2"], fg=C["fg_dim"], hover_fg=C["accent3"],
-                   padx=12, pady=4).pack(side=tk.LEFT, padx=4, pady=6)
-
-        FlatButton(act, text="⎘ Copy", command=self._copy_to_clipboard,
-                   bg=C["surface2"], fg=C["fg_dim"], padx=12, pady=4).pack(
-                   side=tk.LEFT, padx=4, pady=6)
-
-        FlatButton(act, text="⬡ Explorer", command=self._open_explorer_btn,
-                   bg=C["surface2"], fg=C["fg_dim"], hover_fg=C["accent2"],
-                   padx=12, pady=4).pack(side=tk.LEFT, padx=4, pady=6)
-
-        FlatButton(act, text="⬆ Snapshot", command=self._snapshot_current_file,
-                   bg=C["surface2"], fg=C["fg_dim"], hover_fg=C["green"],
-                   padx=12, pady=4).pack(side=tk.LEFT, padx=4, pady=6)
-
-        self._json_mode = "kv"  # or "raw"
-
-    def _update_editor_state(self):
-        """Enable/disable the text editor based on readonly mode."""
-        state = "disabled" if self._readonly else "normal"
-        self._txt_editor.config(state=state)
-        self._save_btn.config(cursor="arrow" if self._readonly else "hand2")
-
-    # ------------------------------------------------------------------
-    # Open / load file
-    # ------------------------------------------------------------------
-
-    def _open_file(self, info: dict, scroll_to_line: int = 0):
-        self._current_file_info = info
-        self._active_variant = "base"
-        self._unsaved = False
-        self._unsaved_dot.pack_forget()
-
-        # Show/hide toggle bars
-        if info["ftype"] == "txt_pair":
-            self._variant_frame.pack(side=tk.LEFT, padx=8)
-        else:
-            self._variant_frame.pack_forget()
-
-        if info["ftype"] == "json":
-            self._json_toggle_frame.pack(side=tk.LEFT, padx=8)
-        else:
-            self._json_toggle_frame.pack_forget()
-
-        # Update header
-        self._editor_title.config(text=info["label"])
-        try:
-            mtime = datetime.fromtimestamp(info["path"].stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            mtime = ""
-        rel = ""
-        save_root = self._settings.get("save_data_path", "")
-        if save_root:
-            try:
-                rel = str(info["path"].relative_to(Path(save_root)))
-            except Exception:
-                rel = str(info["path"])
-        self._editor_meta.config(text=f"{rel}   ·   Modified: {mtime}")
-
-        if info["ftype"] == "json":
-            self._load_json_editor(info["path"])
-        else:
-            self._load_txt_editor(info["path"], scroll_to_line)
-
-        self._update_editor_state()
-        self.status.set(f"Opened: {info['label']}", "ok")
-
-    def _load_txt_editor(self, path: Path, scroll_to_line: int = 0):
-        self._kv_outer.grid_remove()
-        self._txt_editor.grid()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception as e:
-            text = f"[Error reading file: {e}]"
-        self._txt_editor.config(state="normal")
-        self._txt_editor.delete("1.0", tk.END)
-        self._txt_editor.insert("1.0", text)
-        self._txt_editor.edit_modified(False)
-        self._unsaved = False
-        if scroll_to_line > 0:
-            self._txt_editor.see(f"{scroll_to_line}.0")
-        self._update_editor_state()
-
-    def _load_json_editor(self, path: Path):
-        try:
-            with open(str(path), "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            data = {}
-            self.status.set(f"JSON parse error: {e}", "error")
-
-        self._json_data = data
-        if self._json_mode == "kv":
-            self._render_kv_editor(data)
-        else:
-            self._kv_outer.grid_remove()
-            self._txt_editor.grid()
-            self._txt_editor.config(state="normal")
-            self._txt_editor.delete("1.0", tk.END)
-            self._txt_editor.insert("1.0", json.dumps(data, indent=2, ensure_ascii=False))
-            self._txt_editor.edit_modified(False)
-
-    def _render_kv_editor(self, data):
-        self._txt_editor.grid_remove()
-        self._kv_outer.grid()
-        for w in self._kv_inner.winfo_children():
-            w.destroy()
-        self._json_kv_rows = []
-
-        if isinstance(data, dict):
-            for key, val in data.items():
-                self._add_kv_row(key, val)
-        elif isinstance(data, list):
-            for i, val in enumerate(data):
-                self._add_kv_row(str(i), val)
-
-        # Add row button
-        add_btn = FlatButton(self._kv_inner, text="+ Add field",
-                             command=self._add_kv_empty_row,
-                             bg=C["surface"], fg=C["accent"],
-                             font=("Segoe UI", 9), padx=12, pady=4)
-        add_btn.pack(anchor="w", padx=12, pady=8)
-
-    def _add_kv_row(self, key, value):
-        row_frame = tk.Frame(self._kv_inner, bg=C["surface2"], pady=1)
-        row_frame.pack(fill=tk.X, padx=8, pady=2)
-        row_frame.columnconfigure(1, weight=1)
-
-        key_var = tk.StringVar(value=str(key))
-        val_var = tk.StringVar(value=str(value) if not isinstance(value, (dict, list))
-                               else json.dumps(value))
-
-        key_entry = tk.Entry(row_frame, textvariable=key_var, bg=C["surface3"],
-                             fg=C["accent2"], font=("Segoe UI", 9), bd=0,
-                             insertbackground=C["accent"], width=20)
-        key_entry.grid(row=0, column=0, padx=(8, 4), pady=4, sticky="w")
-
-        val_entry = tk.Entry(row_frame, textvariable=val_var, bg=C["surface3"],
-                             fg=C["fg"], font=("Consolas", 9), bd=0,
-                             insertbackground=C["accent"])
-        val_entry.grid(row=0, column=1, padx=(0, 4), pady=4, sticky="ew")
-
-        del_btn = FlatButton(row_frame, text="✕",
-                             command=lambda rf=row_frame: self._remove_kv_row(rf),
-                             bg=C["surface2"], fg=C["fg_muted"],
-                             hover_bg=C["surface3"], hover_fg=C["red"],
-                             font=("Segoe UI", 9), padx=8, pady=2)
-        del_btn.grid(row=0, column=2, padx=(0, 4))
-
-        self._json_kv_rows.append((row_frame, key_var, val_var))
-        return row_frame
-
-    def _add_kv_empty_row(self):
-        self._add_kv_row("", "")
-        self._mark_unsaved()
-
-    def _remove_kv_row(self, row_frame):
-        row_frame.destroy()
-        self._json_kv_rows = [(rf, k, v) for rf, k, v in self._json_kv_rows
-                              if rf.winfo_exists()]
-        self._mark_unsaved()
-
-    def _collect_kv_data(self):
-        result = {}
-        for rf, k_var, v_var in self._json_kv_rows:
-            if not rf.winfo_exists():
-                continue
-            k = k_var.get().strip()
-            if not k:
-                continue
-            raw = v_var.get()
-            try:
-                v = json.loads(raw)
-            except Exception:
-                v = raw
-            result[k] = v
-        return result
-
-    def _set_variant(self, variant):
-        if not self._current_file_info:
-            return
-        self._active_variant = variant
-        if variant == "base":
-            self._base_btn.config(bg=C["accent"], fg="#fff")
-            self._active_btn.config(bg=C["surface3"], fg=C["fg_dim"])
-            path = self._current_file_info["path"]
-        else:
-            self._base_btn.config(bg=C["surface3"], fg=C["fg_dim"])
-            self._active_btn.config(bg=C["accent"], fg="#fff")
-            path = self._current_file_info["pair_path"]
-        if path:
-            self._load_txt_editor(path)
-
-    def _set_json_mode(self, mode):
-        self._json_mode = mode
-        if mode == "kv":
-            self._json_kv_btn.config(bg=C["accent"], fg="#fff")
-            self._json_raw_btn.config(bg=C["surface3"], fg=C["fg_dim"])
-            if self._current_file_info:
-                self._render_kv_editor(self._json_data)
-        else:
-            self._json_kv_btn.config(bg=C["surface3"], fg=C["fg_dim"])
-            self._json_raw_btn.config(bg=C["accent"], fg="#fff")
-            self._kv_outer.grid_remove()
-            self._txt_editor.grid()
-            self._txt_editor.config(state="normal")
-            self._txt_editor.delete("1.0", tk.END)
-            self._txt_editor.insert("1.0", json.dumps(self._json_data, indent=2, ensure_ascii=False))
-            self._txt_editor.edit_modified(False)
-
-    def _on_txt_modified(self, event=None):
-        if self._txt_editor.edit_modified():
-            self._mark_unsaved()
-            self._txt_editor.edit_modified(False)
-
-    def _mark_unsaved(self):
-        if not self._unsaved:
-            self._unsaved = True
-            self._unsaved_dot.pack(side=tk.LEFT, padx=8)
-
-    # ------------------------------------------------------------------
-    # Save / Reset
-    # ------------------------------------------------------------------
-
-    def _current_edit_path(self) -> Path | None:
-        if not self._current_file_info:
-            return None
-        info = self._current_file_info
-        if info["ftype"] == "txt_pair" and self._active_variant == "active":
-            return info["pair_path"]
-        return info["path"]
-
-    def _save_file(self):
-        if self._readonly:
-            self.status.set("Read-only mode — save disabled", "warn")
-            return
-        path = self._current_edit_path()
-        if not path:
-            return
-        try:
-            _make_backup(path)
-            if self._current_file_info["ftype"] == "json" and self._json_mode == "kv":
-                data = self._collect_kv_data()
-                tmp = str(path) + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                os.replace(tmp, str(path))
-                self._json_data = data
-            else:
-                content = self._txt_editor.get("1.0", tk.END)
-                path.write_text(content, encoding="utf-8")
-            self._unsaved = False
-            self._unsaved_dot.pack_forget()
-            self.status.set(f"Saved: {path.name}", "ok")
-        except Exception as e:
-            self.status.set(f"Save error: {e}", "error")
-
-    def _reset_file(self):
-        if not self._current_file_info:
-            return
-        path = self._current_edit_path()
-        if path:
-            if self._current_file_info["ftype"] == "json":
-                self._load_json_editor(path)
-            else:
-                self._load_txt_editor(path)
-        self._unsaved = False
-        self._unsaved_dot.pack_forget()
-        self.status.set("Reverted to saved", "info")
-
-    def _copy_to_clipboard(self):
-        if self._current_file_info and self._current_file_info["ftype"] == "json" \
-                and self._json_mode == "kv":
-            text = json.dumps(self._collect_kv_data(), indent=2, ensure_ascii=False)
-        else:
-            text = self._txt_editor.get("1.0", tk.END)
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.status.set("Copied to clipboard", "ok")
-
-    def _open_explorer_btn(self):
-        path = self._current_edit_path()
-        if path:
-            _open_explorer(path)
-
-    def _snapshot_current_file(self):
-        info = self._current_file_info
-        if not info:
-            self.status.set("No file selected", "warn")
-            return
-        self._open_snapshot_dialog(scope_path=info["path"])
-
-    # ------------------------------------------------------------------
-    # Campaign loading
-    # ------------------------------------------------------------------
-
-    def _auto_load(self):
-        save_root = self._settings.get("save_data_path", "")
-        campaigns = _list_campaigns(save_root) if save_root else []
-        self._campaign_cb["values"] = campaigns
-        last = self._settings.get("last_campaign", "")
-        if last and last in campaigns:
-            self._campaign_var.set(last)
-            self._campaign_id = last
-        elif campaigns:
-            self._campaign_var.set(campaigns[0])
-            self._campaign_id = campaigns[0]
-        else:
-            self.status.set("No campaigns found — set save_data_path in Settings", "warn")
-            return
-        self._populate_category_tree()
-        self.status.set(f"Campaign: {self._campaign_id}", "ok")
-
-    def _on_campaign_change(self, event=None):
-        self._campaign_id = self._campaign_var.get()
-        self._settings["last_campaign"] = self._campaign_id
-        _save_settings(self._settings)
-        self._populate_category_tree()
-        self._file_list.set_items([])
-        self._panel2_file_infos = []
-        self._current_cat = ""
-        self.status.set(f"Campaign: {self._campaign_id}", "ok")
-
-    # ------------------------------------------------------------------
-    # Full-text search
-    # ------------------------------------------------------------------
-
-    def _open_full_search(self):
-        win = tk.Toplevel(self.root)
-        win.title("Full-text Search")
-        win.geometry("680x520")
-        win.configure(bg=C["surface"])
-        win.transient(self.root)
-        win.grab_set()
-        win.attributes("-topmost", True)
-
-        outer = tk.Frame(win, bg=C["surface"],
-                         highlightbackground=C["border"], highlightthickness=1)
-        outer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-
-        tk.Label(outer, text="⌕ Search All Prompt Files", bg=C["surface"], fg=C["accent"],
-                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(14, 4))
-        tk.Frame(outer, bg=C["border"], height=1).pack(fill=tk.X, padx=20)
-
-        row = tk.Frame(outer, bg=C["surface"])
-        row.pack(fill=tk.X, padx=20, pady=10)
-        query_var = tk.StringVar()
-        query_entry = tk.Entry(row, textvariable=query_var, bg=C["surface2"], fg=C["fg"],
-                               font=("Segoe UI", 11), insertbackground=C["accent"],
-                               bd=0, highlightthickness=1, highlightbackground=C["border"])
-        query_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
-        query_entry.focus_set()
-
-        results_frame = tk.Frame(outer, bg=C["surface2"])
-        results_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 12))
-        results_lb = tk.Listbox(results_frame, bg=C["surface2"], fg=C["fg"],
-                                selectbackground=C["accent"], selectforeground="#fff",
-                                font=("Consolas", 9), borderwidth=0, highlightthickness=0,
-                                activestyle="none")
-        results_sb = tk.Scrollbar(results_frame, orient="vertical", command=results_lb.yview,
-                                  bg=C["scrollbar"], troughcolor=C["bg"], width=6)
-        results_lb.config(yscrollcommand=results_sb.set)
-        results_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        results_lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        result_data = []
-
-        def do_search(*_):
-            q = query_var.get().strip()
-            if not q:
-                return
-            results_lb.delete(0, tk.END)
-            result_data.clear()
-            save_root = self._settings.get("save_data_path", "")
-            if not save_root or not self._campaign_id:
-                return
-            prompts = _prompts_dir(save_root, self._campaign_id)
-            q_lower = q.lower()
-            for root_dir, dirs, files in os.walk(str(prompts)):
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
-                for fn in sorted(files):
-                    if not (fn.endswith(".txt") or fn.endswith(".json")):
-                        continue
-                    fp = Path(root_dir) / fn
-                    try:
-                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                    except Exception:
-                        continue
-                    for ln, line in enumerate(lines, 1):
-                        if q_lower in line.lower():
-                            snippet = line.strip()[:80]
-                            display = f"{fn}:{ln}  {snippet}"
-                            results_lb.insert(tk.END, display)
-                            result_data.append((fn, fp, ln, line))
-
-        def open_result(event=None):
-            sel = results_lb.curselection()
-            if not sel:
-                return
-            _, fp, ln, _ = result_data[sel[0]]
-            info = {
-                "label": fp.name,
-                "path": fp,
-                "pair_path": None,
-                "is_active_pair": False,
-                "ftype": "txt",
-            }
-            win.destroy()
-            self._open_file(info, scroll_to_line=ln)
-
-        query_entry.bind("<Return>", do_search)
-        results_lb.bind("<Double-Button-1>", open_result)
-        AccentButton(row, text="Search", command=do_search, padx=12, pady=4).pack(
-            side=tk.LEFT, padx=(8, 0))
-
-    # ------------------------------------------------------------------
-    # Export ZIP
-    # ------------------------------------------------------------------
-
-    def _export_zip(self):
-        if not self._campaign_id:
-            self.status.set("No campaign selected", "warn")
-            return
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root:
-            return
-        prompts = _prompts_dir(save_root, self._campaign_id)
-        dest = filedialog.asksaveasfilename(
-            defaultextension=".zip",
-            filetypes=[("ZIP archive", "*.zip")],
-            initialfile=f"{self._campaign_id}_prompts.zip",
-        )
-        if not dest:
-            return
-        scope = _category_path(prompts, self._current_cat) if self._current_cat else prompts
-        try:
-            with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-                if scope.is_file():
-                    zf.write(str(scope), scope.name)
-                else:
-                    for root_dir, _, files in os.walk(str(scope)):
-                        for fn in files:
-                            fp = Path(root_dir) / fn
-                            zf.write(str(fp), str(fp.relative_to(prompts)))
-            self.status.set(f"Exported to {Path(dest).name}", "ok")
-        except Exception as e:
-            self.status.set(f"Export error: {e}", "error")
-
-    # ------------------------------------------------------------------
-    # Snapshot / Collections
-    # ------------------------------------------------------------------
-
-    def _open_snapshot_dialog(self, scope_path: Path = None):
-        if not self._campaign_id:
-            self.status.set("No campaign selected", "warn")
-            return
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root:
-            return
-        prompts = _prompts_dir(save_root, self._campaign_id)
-
-        win = tk.Toplevel(self.root)
-        win.title("Take Snapshot")
-        win.geometry("520x360")
-        win.configure(bg=C["surface"])
-        win.transient(self.root)
-        win.grab_set()
-
-        outer = tk.Frame(win, bg=C["surface"],
-                         highlightbackground=C["border"], highlightthickness=1)
-        outer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-        tk.Label(outer, text="⬆ Save Snapshot / Collection", bg=C["surface"], fg=C["accent"],
-                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(14, 4))
-        tk.Frame(outer, bg=C["border"], height=1).pack(fill=tk.X, padx=20)
-
-        tk.Label(outer, text="Name:", bg=C["surface"], fg=C["fg_dim"],
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(12, 2))
-        name_var = tk.StringVar(value=f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        tk.Entry(outer, textvariable=name_var, bg=C["surface2"], fg=C["fg"],
-                 font=("Segoe UI", 10), bd=0, insertbackground=C["accent"]).pack(
-                 fill=tk.X, padx=20, ipady=4)
-
-        tk.Label(outer, text="Scope:", bg=C["surface"], fg=C["fg_dim"],
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(10, 2))
-        scope_var = tk.StringVar()
-        scopes = [("Current file", scope_path),
-                  (f"Category: {self._current_cat}",
-                   _category_path(prompts, self._current_cat) if self._current_cat else None),
-                  ("Entire campaign prompts", prompts)]
-        scopes = [(label, p) for label, p in scopes if p is not None]
-        scope_labels = [s[0] for s in scopes]
-        scope_var.set(scope_labels[0] if scope_labels else "")
-        cb = ttk.Combobox(outer, textvariable=scope_var, values=scope_labels,
-                          state="readonly", font=("Segoe UI", 9))
-        cb.pack(fill=tk.X, padx=20, pady=(0, 12))
-
-        def confirm():
-            name = name_var.get().strip()
-            if not name:
-                messagebox.showwarning("Name required", "Please enter a snapshot name.", parent=win)
-                return
-            sel = scope_var.get()
-            chosen_path = next((p for l, p in scopes if l == sel), None)
-            if not chosen_path:
-                return
-            win.destroy()
-            _save_snapshot(name, self._campaign_id, chosen_path, prompts,
-                           status_cb=self.status.set)
-
-        btn_row = tk.Frame(outer, bg=C["surface"])
-        btn_row.pack(fill=tk.X, padx=20, pady=(0, 16))
-        AccentButton(btn_row, text="Save Snapshot", command=confirm, padx=12, pady=4).pack(
-            side=tk.LEFT)
-        FlatButton(btn_row, text="Cancel", command=win.destroy,
-                   bg=C["surface2"], fg=C["fg_dim"], padx=10, pady=4).pack(
-                   side=tk.LEFT, padx=8)
-
-    def _toggle_collections(self):
-        if self._collections_open:
-            self._collections_frame.pack_forget()
-            self._collections_open = False
-        else:
-            self._refresh_collections_list()
-            self._collections_frame.pack(fill=tk.X, before=self.status)
-            self._collections_open = True
-
-    def _build_collections_panel(self, parent):
-        parent.columnconfigure(0, weight=1)
-        tk.Label(parent, text="▦ Collections", bg=C["surface"], fg=C["accent"],
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=16, pady=(10, 4))
-        tk.Frame(parent, bg=C["border"], height=1).pack(fill=tk.X)
-
-        btn_row = tk.Frame(parent, bg=C["surface"])
-        btn_row.pack(fill=tk.X, padx=12, pady=4)
-        FlatButton(btn_row, text="+ New Snapshot", command=self._open_snapshot_dialog,
-                   bg=C["surface2"], fg=C["accent"], font=("Segoe UI", 9),
-                   padx=10, pady=3).pack(side=tk.LEFT)
-        FlatButton(btn_row, text="✕ Close", command=self._toggle_collections,
-                   bg=C["surface"], fg=C["fg_muted"], font=("Segoe UI", 9),
-                   padx=10, pady=3).pack(side=tk.RIGHT)
-
-        list_outer = tk.Frame(parent, bg=C["surface"], height=180)
-        list_outer.pack(fill=tk.X, padx=12, pady=(0, 8))
-        list_outer.pack_propagate(False)
-
-        self._coll_listbox = tk.Listbox(list_outer, bg=C["surface2"], fg=C["fg"],
-                                         selectbackground=C["accent"], selectforeground="#fff",
-                                         font=("Segoe UI", 9), borderwidth=0,
-                                         highlightthickness=0, activestyle="none")
-        coll_sb = tk.Scrollbar(list_outer, orient="vertical",
-                               command=self._coll_listbox.yview,
-                               bg=C["scrollbar"], troughcolor=C["bg"], width=6)
-        self._coll_listbox.config(yscrollcommand=coll_sb.set)
-        coll_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._coll_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._coll_data = []
-
-        act_row = tk.Frame(parent, bg=C["surface"])
-        act_row.pack(fill=tk.X, padx=12, pady=(0, 10))
-        FlatButton(act_row, text="↩ Restore", command=self._restore_collection,
-                   bg=C["surface2"], fg=C["fg_dim"], hover_fg=C["green"],
-                   font=("Segoe UI", 9), padx=10, pady=3).pack(side=tk.LEFT, padx=(0, 4))
-        FlatButton(act_row, text="⬎ Copy to...", command=self._copy_collection_to,
-                   bg=C["surface2"], fg=C["fg_dim"], hover_fg=C["accent2"],
-                   font=("Segoe UI", 9), padx=10, pady=3).pack(side=tk.LEFT, padx=(0, 4))
-        FlatButton(act_row, text="⊘ Delete", command=self._delete_collection,
-                   bg=C["surface2"], fg=C["fg_dim"], hover_fg=C["red"],
-                   font=("Segoe UI", 9), padx=10, pady=3).pack(side=tk.LEFT)
-
-    def _refresh_collections_list(self):
-        self._coll_listbox.delete(0, tk.END)
-        self._coll_data = _list_collections()
-        for meta in self._coll_data:
-            ts = meta.get("timestamp", "?")
-            try:
-                ts_fmt = datetime.strptime(ts, "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                ts_fmt = ts
-            label = (f"  {meta.get('name', '?')}   ·   {ts_fmt}   ·   "
-                     f"{meta.get('campaign', '?')}   ·   {meta.get('file_count', '?')} files")
-            self._coll_listbox.insert(tk.END, label)
-
-    def _selected_collection(self):
-        sel = self._coll_listbox.curselection()
-        if sel and 0 <= sel[0] < len(self._coll_data):
-            return self._coll_data[sel[0]]
+    def __init__(self, parent, on_select=None, **kw):
+        super().__init__(parent, bg=C["surface"], **kw)
+        self._on_select = on_select
+        self._entries: list[PromptFileEntry] = []
+        self._filtered: list[PromptFileEntry] = []
+        self._selected_idx: Optional[int] = None
+        self._hover_idx: Optional[int] = None
+
+        self._canvas = tk.Canvas(self, bg=C["surface"], highlightthickness=0, bd=0)
+        self._sb = tk.Scrollbar(self, orient="vertical",
+                                command=self._canvas.yview,
+                                bg=C["scrollbar"], troughcolor=C["bg"],
+                                width=6, bd=0, relief="flat")
+        self._canvas.configure(yscrollcommand=self._sb.set)
+        self._sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._canvas.bind("<Configure>", self._on_resize)
+        self._canvas.bind("<MouseWheel>", self._on_wheel)
+        self._canvas.bind("<Button-4>", lambda e: self._canvas.yview_scroll(-1, "units"))
+        self._canvas.bind("<Button-5>", lambda e: self._canvas.yview_scroll(1, "units"))
+        self._canvas.bind("<Motion>", self._on_mouse_motion)
+        self._canvas.bind("<Leave>", self._on_mouse_leave)
+        self._canvas.bind("<Button-1>", self._on_click)
+
+        self._canvas_width = 240
+
+    # ---- public API ----
+
+    def load(self, entries: list[PromptFileEntry], search_term: str = "") -> None:
+        self._entries = entries
+        self._apply_filter(search_term)
+
+    def filter(self, search_term: str) -> None:
+        self._apply_filter(search_term)
+
+    def clear_selection(self) -> None:
+        self._selected_idx = None
+        self._redraw()
+
+    def selected_entry(self) -> Optional[PromptFileEntry]:
+        if self._selected_idx is not None and 0 <= self._selected_idx < len(self._filtered):
+            return self._filtered[self._selected_idx]
         return None
 
-    def _restore_collection(self):
-        meta = self._selected_collection()
-        if not meta:
-            self.status.set("Select a collection first", "warn")
-            return
-        if not messagebox.askyesno(
-                "Restore Collection",
-                f"Restore '{meta['name']}' to campaign '{self._campaign_id}'?\n"
-                f"Current files will be auto-backed up first.",
-                parent=self.root):
-            return
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root or not self._campaign_id:
-            return
-        prompts = _prompts_dir(save_root, self._campaign_id)
-        # auto-backup current state
-        _save_snapshot(f"pre-restore-backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                       self._campaign_id, prompts, prompts)
-        src_dir: Path = meta["_dir"]
-        count = 0
-        for root_dir, _, files in os.walk(str(src_dir)):
-            for fn in files:
-                if fn == "metadata.json":
-                    continue
-                src = Path(root_dir) / fn
-                rel = src.relative_to(src_dir)
-                dest = prompts / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(src), str(dest))
-                count += 1
-        self.status.set(f"Restored {count} files from '{meta['name']}'", "ok")
-        self._load_file_list()
+    # ---- internal ----
 
-    def _copy_collection_to(self):
-        meta = self._selected_collection()
-        if not meta:
-            self.status.set("Select a collection first", "warn")
-            return
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root:
-            return
-        campaigns = _list_campaigns(save_root)
-        other = [c for c in campaigns if c != meta.get("campaign", "")]
-        if not other:
-            messagebox.showinfo("No Other Campaigns", "No other campaigns to copy to.",
-                                parent=self.root)
+    def _apply_filter(self, term: str) -> None:
+        t = term.strip().lower()
+        if t:
+            self._filtered = [e for e in self._entries if t in e.name.lower()]
+        else:
+            self._filtered = list(self._entries)
+        self._selected_idx = None
+        self._hover_idx = None
+        self._update_scroll_region()
+        self._redraw()
+
+    def _update_scroll_region(self) -> None:
+        total_h = len(self._filtered) * ROW_H
+        self._canvas.configure(scrollregion=(0, 0, self._canvas_width, total_h))
+
+    def _on_resize(self, event) -> None:
+        self._canvas_width = event.width
+        self._update_scroll_region()
+        self._redraw()
+
+    def _on_wheel(self, event) -> None:
+        delta = -1 if event.delta > 0 else 1
+        self._canvas.yview_scroll(delta, "units")
+
+    def _visible_range(self) -> tuple[int, int]:
+        """Return (first_idx, last_idx) of rows in viewport."""
+        top = self._canvas.canvasy(0)
+        bottom = top + self._canvas.winfo_height()
+        first = max(0, int(top // ROW_H))
+        last = min(len(self._filtered), int(bottom // ROW_H) + 2)
+        return first, last
+
+    def _redraw(self) -> None:
+        self._canvas.delete("all")
+        if not self._filtered:
+            self._canvas.create_text(
+                self._canvas_width // 2, 40,
+                text="No files", fill=C["fg_muted"],
+                font=("Segoe UI", 9), anchor="center"
+            )
             return
 
-        win = tk.Toplevel(self.root)
-        win.title("Copy Collection to Campaign")
-        win.geometry("400x200")
-        win.configure(bg=C["surface"])
-        win.transient(self.root)
-        win.grab_set()
+        first, last = self._visible_range()
+        for i in range(first, last):
+            self._draw_row(i)
 
-        outer = tk.Frame(win, bg=C["surface"],
-                         highlightbackground=C["border"], highlightthickness=1)
-        outer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-        tk.Label(outer, text="Target Campaign:", bg=C["surface"], fg=C["fg_dim"],
-                 font=("Segoe UI", 10)).pack(anchor="w", padx=20, pady=(16, 4))
-        target_var = tk.StringVar(value=other[0])
-        cb = ttk.Combobox(outer, textvariable=target_var, values=other,
-                          state="readonly", font=("Segoe UI", 10))
-        cb.pack(fill=tk.X, padx=20, pady=(0, 12))
-
-        def confirm():
-            target = target_var.get()
-            win.destroy()
-            target_prompts = _prompts_dir(save_root, target)
-            _save_snapshot(f"pre-copy-backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                           target, target_prompts, target_prompts)
-            src_dir: Path = meta["_dir"]
-            count = 0
-            for root_dir, _, files in os.walk(str(src_dir)):
-                for fn in files:
-                    if fn == "metadata.json":
-                        continue
-                    src = Path(root_dir) / fn
-                    rel = src.relative_to(src_dir)
-                    dest = target_prompts / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(src), str(dest))
-                    count += 1
-            self.status.set(f"Copied {count} files to campaign '{target}'", "ok")
-
-        btn_row = tk.Frame(outer, bg=C["surface"])
-        btn_row.pack(fill=tk.X, padx=20, pady=(0, 16))
-        AccentButton(btn_row, text="Copy", command=confirm, padx=12, pady=4).pack(side=tk.LEFT)
-        FlatButton(btn_row, text="Cancel", command=win.destroy,
-                   bg=C["surface2"], fg=C["fg_dim"], padx=10, pady=4).pack(
-                   side=tk.LEFT, padx=8)
-
-    def _delete_collection(self):
-        meta = self._selected_collection()
-        if not meta:
-            self.status.set("Select a collection first", "warn")
+    def _draw_row(self, idx: int) -> None:
+        if idx >= len(self._filtered):
             return
-        if not messagebox.askyesno(
-                "Delete Collection",
-                f"Permanently delete '{meta['name']}'?",
-                parent=self.root):
+        entry = self._filtered[idx]
+        y0 = idx * ROW_H
+        y1 = y0 + ROW_H
+        w = self._canvas_width
+
+        # background
+        if idx == self._selected_idx:
+            bg = C["surface3"]
+            border_color = C["accent2"]
+        elif idx == self._hover_idx:
+            bg = C["surface2"]
+            border_color = C["border"]
+        else:
+            bg = C["surface"]
+            border_color = None
+
+        self._canvas.create_rectangle(0, y0, w, y1, fill=bg, outline="")
+        if idx == self._selected_idx:
+            self._canvas.create_rectangle(0, y0, 3, y1, fill=C["accent2"], outline="")
+        if border_color:
+            self._canvas.create_line(0, y1 - 1, w, y1 - 1, fill=C["border"])
+
+        # type badge
+        tag_text = entry.type_tag
+        tag_color = TYPE_COLORS.get(tag_text, C["fg_muted"])
+        self._canvas.create_text(
+            ROW_PAD_X, y0 + ROW_H // 2,
+            text=tag_text, fill=tag_color,
+            font=("Segoe UI", 7, "bold"), anchor="w"
+        )
+
+        # file name
+        name_x = ROW_PAD_X + 46
+        fg = C["fg"] if idx == self._selected_idx else C["fg_dim"]
+        self._canvas.create_text(
+            name_x, y0 + ROW_H // 2 - 5,
+            text=entry.display_name, fill=fg,
+            font=("Segoe UI", 9), anchor="w"
+        )
+
+        # active indicator
+        if entry.has_active:
+            self._canvas.create_text(
+                name_x, y0 + ROW_H // 2 + 8,
+                text="\u25cf active variant", fill=C["green"],
+                font=("Segoe UI", 7), anchor="w"
+            )
+
+    def _row_at_y(self, canvas_y: float) -> Optional[int]:
+        idx = int(canvas_y // ROW_H)
+        if 0 <= idx < len(self._filtered):
+            return idx
+        return None
+
+    def _on_mouse_motion(self, event) -> None:
+        cy = self._canvas.canvasy(event.y)
+        new_hover = self._row_at_y(cy)
+        if new_hover != self._hover_idx:
+            old, self._hover_idx = self._hover_idx, new_hover
+            if old is not None:
+                self._draw_row(old)
+            if new_hover is not None:
+                self._draw_row(new_hover)
+
+    def _on_mouse_leave(self, event=None) -> None:
+        old, self._hover_idx = self._hover_idx, None
+        if old is not None:
+            self._draw_row(old)
+
+    def _on_click(self, event) -> None:
+        cy = self._canvas.canvasy(event.y)
+        idx = self._row_at_y(cy)
+        if idx is None:
             return
-        try:
-            shutil.rmtree(str(meta["_dir"]))
-            self.status.set(f"Deleted '{meta['name']}'", "ok")
-        except Exception as e:
-            self.status.set(f"Delete error: {e}", "error")
-        self._refresh_collections_list()
+        old, self._selected_idx = self._selected_idx, idx
+        if old is not None:
+            self._draw_row(old)
+        self._draw_row(idx)
+        if self._on_select:
+            self._on_select(self._filtered[idx])
 
-    # ------------------------------------------------------------------
-    # Copy Structure (Campaign → Campaign)
-    # ------------------------------------------------------------------
 
-    def _open_copy_structure(self):
-        save_root = self._settings.get("save_data_path", "")
-        if not save_root:
-            self.status.set("save_data_path not configured", "warn")
+# ===========================================================================
+# CategoryTree — Panel 1 lower section
+# ===========================================================================
+
+class CategoryTree(tk.Frame):
+    """
+    Static list of prompt categories with file-count badges.
+    Calls on_select(category_key) when a node is clicked.
+    """
+
+    def __init__(self, parent, on_select=None, **kw):
+        super().__init__(parent, bg=C["surface"], **kw)
+        self._on_select = on_select
+        self._active_key: Optional[str] = None
+        self._rows: dict[str, dict] = {}  # key -> {frame, name_lbl, badge_lbl}
+        self._build()
+
+    def _build(self) -> None:
+        # scrollable inner
+        canvas = tk.Canvas(self, bg=C["surface"], highlightthickness=0, bd=0)
+        sb = tk.Scrollbar(self, orient="vertical", command=canvas.yview,
+                          bg=C["scrollbar"], troughcolor=C["bg"], width=5, bd=0)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = tk.Frame(canvas, bg=C["surface"])
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+
+        # root-level pseudo-category
+        self._add_row(inner, "__root__", "Root Files")
+
+        # category rows
+        for cat_key in PROMPT_CATEGORIES:
+            label = cat_key.replace("_", " ").title()
+            self._add_row(inner, cat_key, label)
+
+    def _add_row(self, parent, key: str, label: str) -> None:
+        icon = CATEGORY_ICONS.get(key, "\u25b8")
+        row = tk.Frame(parent, bg=C["surface"], cursor="hand2", height=30)
+        row.pack(fill=tk.X)
+        row.pack_propagate(False)
+
+        indicator = tk.Frame(row, bg=C["surface"], width=3)
+        indicator.pack(side=tk.LEFT, fill=tk.Y)
+
+        icon_lbl = tk.Label(row, text=icon, bg=C["surface"], fg=C["fg_muted"],
+                            font=("Segoe UI", 9))
+        icon_lbl.pack(side=tk.LEFT, padx=(6, 2), pady=4)
+
+        name_lbl = tk.Label(row, text=label, bg=C["surface"], fg=C["fg_dim"],
+                            font=("Segoe UI", 9), anchor="w")
+        name_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        badge = tk.Label(row, text="", bg=C["surface"], fg=C["fg_muted"],
+                         font=("Segoe UI", 8), padx=6)
+        badge.pack(side=tk.RIGHT, padx=(0, 6))
+
+        self._rows[key] = {
+            "frame": row,
+            "indicator": indicator,
+            "icon_lbl": icon_lbl,
+            "name_lbl": name_lbl,
+            "badge": badge,
+        }
+
+        for w in (row, indicator, icon_lbl, name_lbl, badge):
+            w.bind("<Enter>", lambda e, k=key: self._hover_on(k))
+            w.bind("<Leave>", lambda e, k=key: self._hover_off(k))
+            w.bind("<Button-1>", lambda e, k=key: self._click(k))
+
+    def set_counts(self, counts: dict[str, int]) -> None:
+        """Update badge text for each category key."""
+        for key, widgets in self._rows.items():
+            n = counts.get(key, 0)
+            widgets["badge"].config(text=str(n) if n else "")
+
+    def set_active(self, key: Optional[str]) -> None:
+        if self._active_key and self._active_key in self._rows:
+            self._deactivate(self._active_key)
+        self._active_key = key
+        if key and key in self._rows:
+            self._activate(key)
+
+    def _activate(self, key: str) -> None:
+        w = self._rows[key]
+        w["frame"].config(bg=C["surface3"])
+        w["indicator"].config(bg=C["accent2"])
+        w["icon_lbl"].config(bg=C["surface3"], fg=C["accent2"])
+        w["name_lbl"].config(bg=C["surface3"], fg=C["fg"])
+        w["badge"].config(bg=C["surface3"])
+
+    def _deactivate(self, key: str) -> None:
+        w = self._rows[key]
+        w["frame"].config(bg=C["surface"])
+        w["indicator"].config(bg=C["surface"])
+        w["icon_lbl"].config(bg=C["surface"], fg=C["fg_muted"])
+        w["name_lbl"].config(bg=C["surface"], fg=C["fg_dim"])
+        w["badge"].config(bg=C["surface"])
+
+    def _hover_on(self, key: str) -> None:
+        if key == self._active_key:
             return
-        campaigns = _list_campaigns(save_root)
-        if len(campaigns) < 2:
-            messagebox.showinfo("Copy Structure",
-                                "Need at least 2 campaigns to copy between.",
-                                parent=self.root)
+        w = self._rows[key]
+        for widget in (w["frame"], w["icon_lbl"], w["name_lbl"], w["badge"]):
+            widget.config(bg=C["surface2"])
+
+    def _hover_off(self, key: str) -> None:
+        if key == self._active_key:
+            return
+        w = self._rows[key]
+        for widget in (w["frame"], w["icon_lbl"], w["name_lbl"], w["badge"]):
+            widget.config(bg=C["surface"])
+
+    def _click(self, key: str) -> None:
+        self.set_active(key)
+        if self._on_select:
+            self._on_select(key)
+
+
+# ===========================================================================
+# Panel 3 — Info placeholder (Part 2 will replace)
+# ===========================================================================
+
+class InfoPlaceholder(tk.Frame):
+    """
+    Right panel placeholder shown until an editor is implemented in Part 2.
+    Displays selected file name, path, type, and active-variant status.
+    """
+
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=C["bg"], **kw)
+        self._build()
+
+    def _build(self) -> None:
+        center = tk.Frame(self, bg=C["bg"])
+        center.place(relx=0.5, rely=0.5, anchor="center")
+
+        self._icon = tk.Label(center, text="\u229e", bg=C["bg"], fg=C["surface3"],
+                              font=("Segoe UI", 48))
+        self._icon.pack(pady=(0, 12))
+
+        self._title = tk.Label(center, text="No file selected",
+                               bg=C["bg"], fg=C["fg_dim"],
+                               font=("Segoe UI", 13, "bold"))
+        self._title.pack()
+
+        self._sub = tk.Label(center, text="Select a category and file to preview it here",
+                             bg=C["bg"], fg=C["fg_muted"],
+                             font=("Segoe UI", 9))
+        self._sub.pack(pady=(4, 0))
+
+        # detail fields
+        details = tk.Frame(center, bg=C["bg"])
+        details.pack(pady=(20, 0))
+
+        self._fields: dict[str, tk.Label] = {}
+        for key in ("Type", "Category", "Path", "Active variant"):
+            row = tk.Frame(details, bg=C["bg"])
+            row.pack(fill=tk.X, pady=2)
+            tk.Label(row, text=f"{key}:", bg=C["bg"], fg=C["fg_muted"],
+                     font=("Segoe UI", 8), width=12, anchor="e").pack(side=tk.LEFT, padx=(0, 8))
+            val = tk.Label(row, text="—", bg=C["bg"], fg=C["fg_dim"],
+                           font=("Segoe UI", 8), anchor="w")
+            val.pack(side=tk.LEFT)
+            self._fields[key] = val
+
+    def show_entry(self, entry: Optional[PromptFileEntry]) -> None:
+        if entry is None:
+            self._title.config(text="No file selected")
+            self._sub.config(text="Select a category and file to preview it here")
+            for v in self._fields.values():
+                v.config(text="—")
             return
 
-        win = tk.Toplevel(self.root)
-        win.title("Copy Prompt Structure")
-        win.geometry("640x560")
-        win.configure(bg=C["surface"])
-        win.transient(self.root)
-        win.grab_set()
-
-        outer = tk.Frame(win, bg=C["surface"],
-                         highlightbackground=C["border"], highlightthickness=1)
-        outer.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-
-        tk.Label(outer, text="⬎ Copy Prompt Structure", bg=C["surface"], fg=C["accent"],
-                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(14, 4))
-        tk.Frame(outer, bg=C["border"], height=1).pack(fill=tk.X, padx=20)
-
-        row1 = tk.Frame(outer, bg=C["surface"])
-        row1.pack(fill=tk.X, padx=20, pady=(10, 4))
-        tk.Label(row1, text="Source:", bg=C["surface"], fg=C["fg_dim"],
-                 font=("Segoe UI", 9), width=10, anchor="w").pack(side=tk.LEFT)
-        src_var = tk.StringVar(value=campaigns[0])
-        ttk.Combobox(row1, textvariable=src_var, values=campaigns, state="readonly",
-                     width=30, font=("Segoe UI", 9)).pack(side=tk.LEFT)
-
-        row2 = tk.Frame(outer, bg=C["surface"])
-        row2.pack(fill=tk.X, padx=20, pady=(4, 4))
-        tk.Label(row2, text="Target:", bg=C["surface"], fg=C["fg_dim"],
-                 font=("Segoe UI", 9), width=10, anchor="w").pack(side=tk.LEFT)
-        tgt_var = tk.StringVar(value=campaigns[-1])
-        ttk.Combobox(row2, textvariable=tgt_var, values=campaigns, state="readonly",
-                     width=30, font=("Segoe UI", 9)).pack(side=tk.LEFT)
-
-        tk.Label(outer, text="Scope (select categories):", bg=C["surface"], fg=C["fg_dim"],
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(8, 2))
-
-        scope_frame = tk.Frame(outer, bg=C["surface2"])
-        scope_frame.pack(fill=tk.X, padx=20, pady=(0, 8))
-        cat_vars = {}
-        all_var = tk.BooleanVar(value=True)
-
-        all_cb = ttk.Checkbutton(scope_frame, text="All categories", variable=all_var,
-                                 style="TCheckbutton")
-        all_cb.pack(anchor="w", padx=12, pady=4)
-        for cat, _ in CATEGORIES:
-            v = tk.BooleanVar(value=False)
-            cat_vars[cat] = v
-            ttk.Checkbutton(scope_frame, text=cat, variable=v,
-                            style="TCheckbutton").pack(anchor="w", padx=24, pady=1)
-
-        preview_txt = tk.Text(outer, bg=C["surface2"], fg=C["fg_dim"],
-                              font=("Consolas", 8), height=6, bd=0,
-                              state="disabled", wrap="none")
-        preview_txt.pack(fill=tk.X, padx=20, pady=(0, 8))
-
-        def preview():
-            src = src_var.get()
-            tgt = tgt_var.get()
-            if src == tgt:
-                preview_txt.config(state="normal")
-                preview_txt.delete("1.0", tk.END)
-                preview_txt.insert(tk.END, "Source and target must differ.")
-                preview_txt.config(state="disabled")
-                return
-            src_p = _prompts_dir(save_root, src)
-            tgt_p = _prompts_dir(save_root, tgt)
-            cats_to_copy = list(CATEGORIES) if all_var.get() else [
-                (c, i) for c, i in CATEGORIES if cat_vars[c].get()]
-            lines = []
-            for cat, _ in cats_to_copy:
-                src_c = _category_path(src_p, cat)
-                tgt_c = _category_path(tgt_p, cat)
-                if not src_c.exists():
-                    continue
-                for root_dir, _, files in os.walk(str(src_c)):
-                    for fn in files:
-                        rel = Path(root_dir).relative_to(src_p) / fn
-                        dest = tgt_p / rel
-                        marker = "[overwrite]" if dest.exists() else "[new]"
-                        lines.append(f"{marker} {rel}")
-            preview_txt.config(state="normal")
-            preview_txt.delete("1.0", tk.END)
-            preview_txt.insert(tk.END, "\n".join(lines[:100]))
-            if len(lines) > 100:
-                preview_txt.insert(tk.END, f"\n... and {len(lines)-100} more")
-            preview_txt.config(state="disabled")
-
-        def confirm():
-            src = src_var.get()
-            tgt = tgt_var.get()
-            if src == tgt:
-                messagebox.showwarning("Same Campaign",
-                                       "Source and target must differ.", parent=win)
-                return
-            if not messagebox.askyesno("Confirm Copy",
-                                       f"Copy from '{src}' to '{tgt}'?\n"
-                                       f"Target files will be auto-backed up.",
-                                       parent=win):
-                return
-            tgt_p = _prompts_dir(save_root, tgt)
-            src_p = _prompts_dir(save_root, src)
-            _save_snapshot(f"pre-copy-backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                           tgt, tgt_p, tgt_p)
-            cats_to_copy = list(CATEGORIES) if all_var.get() else [
-                (c, i) for c, i in CATEGORIES if cat_vars[c].get()]
-            count = 0
-            for cat, _ in cats_to_copy:
-                src_c = _category_path(src_p, cat)
-                if not src_c.exists():
-                    continue
-                for root_dir, _, files in os.walk(str(src_c)):
-                    for fn in files:
-                        rel = Path(root_dir).relative_to(src_p) / fn
-                        dest = tgt_p / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(str(Path(root_dir) / fn), str(dest))
-                        count += 1
-            win.destroy()
-            self.status.set(f"Copied {count} files from '{src}' to '{tgt}'", "ok")
-
-        btn_row = tk.Frame(outer, bg=C["surface"])
-        btn_row.pack(fill=tk.X, padx=20, pady=(0, 14))
-        AccentButton(btn_row, text="Preview", command=preview,
-                     padx=12, pady=4).pack(side=tk.LEFT)
-        AccentButton(btn_row, text="Copy", command=confirm,
-                     padx=12, pady=4).pack(side=tk.LEFT, padx=8)
-        FlatButton(btn_row, text="Cancel", command=win.destroy,
-                   bg=C["surface2"], fg=C["fg_dim"], padx=10, pady=4).pack(side=tk.LEFT)
+        self._title.config(text=entry.display_name)
+        self._sub.config(text="")
+        self._fields["Type"].config(text=entry.type_tag)
+        self._fields["Category"].config(text=entry.category)
+        self._fields["Path"].config(text=_truncate_path(entry.base_path, 50))
+        self._fields["Active variant"].config(
+            text=os.path.basename(entry.active_path) if entry.active_path else "None"
+        )
 
 
-# ---------------------------------------------------------------------------
-# Stand-alone entry point
-# ---------------------------------------------------------------------------
+def _truncate_path(path: str, max_len: int) -> str:
+    if len(path) <= max_len:
+        return path
+    return "\u2026" + path[-(max_len - 1):]
 
-def main():
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        app = PromptManagementApp(root)
+
+# ===========================================================================
+# PromptManagementApp
+# ===========================================================================
+
+class PromptManagementApp:
+    """Main class for the Prompt Management section. Launched from main.py hub."""
+
+    # --- window config ---
+    WIN_W = 1280
+    WIN_H = 820
+    MIN_W = 900
+    MIN_H = 600
+    PANEL1_W = 220
+    PANEL2_W = 260
+
+    def __init__(self, root: tk.Toplevel, on_close=None):
+        self.root = root
+        self.on_close = on_close
+
+        # settings
+        self.sm = SettingsManager()
+
+        # state
+        self._campaigns: list[str] = []
+        self._current_campaign: Optional[str] = None
+        self._prompt_index: Optional[PromptIndex] = None
+        self._active_category: Optional[str] = None
+        self._selected_entry: Optional[PromptFileEntry] = None
+
+        # window setup
+        root.title("Prompt Management")
+        root.overrideredirect(True)
+        root.geometry(f"{self.WIN_W}x{self.WIN_H}")
+        root.minsize(self.MIN_W, self.MIN_H)
+        root.configure(bg=C["border"])
         root.update_idletasks()
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.geometry(f"1280x820+{(sw-1280)//2}+{(sh-820)//2}")
-        root.deiconify()
-        root.protocol("WM_DELETE_WINDOW", lambda: (app._save_settings_state(), root.destroy()))
-        root.mainloop()
-    except Exception as e:
-        import traceback
-        err = traceback.format_exc()
-        try:
-            r = tk.Tk()
-            r.withdraw()
-            messagebox.showerror("Startup Error",
-                                 f"PromptManagement crashed:\n\n{err}", parent=r)
-            r.destroy()
-        except Exception:
-            print(err, file=sys.stderr)
-        sys.exit(1)
+        root.geometry(
+            f"{self.WIN_W}x{self.WIN_H}"
+            f"+{(sw - self.WIN_W) // 2}+{(sh - self.WIN_H) // 2}"
+        )
+        root.protocol("WM_DELETE_WINDOW", self._on_destroy)
+
+        self._frame = tk.Frame(root, bg=C["bg"],
+                               highlightbackground=C["border"], highlightthickness=1)
+        self._frame.pack(fill=tk.BOTH, expand=True)
+
+        self._build_ui()
+        self._init_data()
+
+    # ===========================================================================
+    # Hub integration
+    # ===========================================================================
+
+    def back_to_hub(self) -> None:
+        self._on_destroy()
+
+    def _on_destroy(self) -> None:
+        self.root.destroy()
+        if self.on_close:
+            self.on_close()
+
+    # ===========================================================================
+    # Data init
+    # ===========================================================================
+
+    def _init_data(self) -> None:
+        """Load settings, discover campaigns, restore last selection."""
+        save_path = self.sm.save_data_path()
+        self._campaigns = discover_campaigns(save_path)
+
+        # populate campaign dropdown
+        names = self._campaigns if self._campaigns else ["(no campaigns found)"]
+        self._campaign_var.set("")
+        menu = self._campaign_menu["menu"]
+        menu.delete(0, "end")
+        for name in names:
+            menu.add_command(label=name,
+                             command=lambda n=name: self._on_campaign_selected(n))
+
+        # restore last
+        last = self.sm.last_campaign()
+        if last and last in self._campaigns:
+            self._campaign_var.set(last)
+            self._load_campaign(last)
+        elif self._campaigns:
+            first = self._campaigns[0]
+            self._campaign_var.set(first)
+            self._load_campaign(first)
+        else:
+            self._campaign_var.set(names[0])
+            self.status.set("No campaigns found — set save_data path in Settings", "warn")
+
+    def _on_campaign_selected(self, campaign_id: str) -> None:
+        if campaign_id not in self._campaigns:
+            return
+        self._campaign_var.set(campaign_id)
+        self._load_campaign(campaign_id)
+        self.sm.set_last_campaign(campaign_id)
+        self.sm.save()
+
+    def _load_campaign(self, campaign_id: str) -> None:
+        self._current_campaign = campaign_id
+        self._prompt_index = PromptIndex()
+        save_path = self.sm.save_data_path()
+        ok = self._prompt_index.scan(save_path, campaign_id)
+        if not ok:
+            self.status.set(f"prompts/ folder not found for campaign: {campaign_id}", "warn")
+        else:
+            total = self._prompt_index.total_files()
+            self.status.set(
+                f"Campaign loaded: {campaign_id}  \u2014  {total} prompt files", "ok"
+            )
+        self._refresh_category_badges()
+        # reset panel 2 + 3
+        self._active_category = None
+        self._selected_entry = None
+        self._cat_tree.set_active(None)
+        self._file_list.load([])
+        self._info_panel.show_entry(None)
+        self._panel2_header.config(text="Select a category")
+
+    def _refresh_category_badges(self) -> None:
+        if self._prompt_index is None:
+            return
+        counts: dict[str, int] = {}
+        for cat_key, cm in self._prompt_index.categories.items():
+            counts[cat_key] = cm.count
+        counts["__root__"] = len(self._prompt_index.root_entries)
+        self._cat_tree.set_counts(counts)
+
+    # ===========================================================================
+    # UI construction
+    # ===========================================================================
+
+    def _build_ui(self) -> None:
+        bar = CustomTitleBar(self._frame, self, "Prompt Management")
+        bar.pack(fill=tk.X)
+
+        body = tk.Frame(self._frame, bg=C["bg"])
+        body.pack(fill=tk.BOTH, expand=True)
+
+        self._build_panel1(body)
+        self._build_panel2(body)
+        self._build_panel3(body)
+
+        self.status = StatusBar(self._frame)
+        self.status.pack(fill=tk.X, side=tk.BOTTOM)
+
+    # ---------------------------------------------------------------------------
+    # Panel 1 — sidebar: campaign picker + category tree
+    # ---------------------------------------------------------------------------
+
+    def _build_panel1(self, parent: tk.Frame) -> None:
+        panel = tk.Frame(parent, bg=C["surface"], width=self.PANEL1_W)
+        panel.pack(side=tk.LEFT, fill=tk.Y)
+        panel.pack_propagate(False)
+
+        # header
+        hdr = tk.Frame(panel, bg=C["surface"], height=48)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="\u229e Prompts", bg=C["surface"], fg=C["accent2"],
+                 font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT, padx=14, pady=12)
+
+        tk.Frame(panel, bg=C["border"], height=1).pack(fill=tk.X)
+
+        # campaign dropdown
+        camp_frame = tk.Frame(panel, bg=C["surface"], pady=8)
+        camp_frame.pack(fill=tk.X, padx=10)
+        tk.Label(camp_frame, text="CAMPAIGN", bg=C["surface"], fg=C["fg_muted"],
+                 font=("Segoe UI", 7, "bold")).pack(anchor="w", pady=(0, 4))
+
+        self._campaign_var = tk.StringVar()
+        # plain tk OptionMenu styled to match
+        self._campaign_menu = tk.OptionMenu(camp_frame, self._campaign_var, "")
+        self._campaign_menu.config(
+            bg=C["surface2"], fg=C["fg"], activebackground=C["surface3"],
+            activeforeground=C["fg"], relief="flat", borderwidth=0,
+            highlightthickness=1, highlightbackground=C["border"],
+            font=("Segoe UI", 9), indicatoron=True, cursor="hand2"
+        )
+        self._campaign_menu["menu"].config(
+            bg=C["surface2"], fg=C["fg"],
+            activebackground=C["accent"], activeforeground="#fff",
+            borderwidth=0, font=("Segoe UI", 9)
+        )
+        self._campaign_menu.pack(fill=tk.X)
+
+        FlatButton(camp_frame, text="\u21ba Refresh",
+                   command=self._refresh_campaigns,
+                   bg=C["surface"], fg=C["fg_muted"],
+                   hover_bg=C["surface2"], hover_fg=C["accent2"],
+                   font=("Segoe UI", 8), padx=4, pady=3).pack(anchor="e", pady=(4, 0))
+
+        tk.Frame(panel, bg=C["border"], height=1).pack(fill=tk.X, padx=6, pady=4)
+
+        # category tree header
+        tk.Label(panel, text="CATEGORIES", bg=C["surface"], fg=C["fg_muted"],
+                 font=("Segoe UI", 7, "bold")).pack(anchor="w", padx=14, pady=(4, 2))
+
+        # category tree (fills rest of panel)
+        self._cat_tree = CategoryTree(panel, on_select=self._on_category_selected)
+        self._cat_tree.pack(fill=tk.BOTH, expand=True)
+
+    # ---------------------------------------------------------------------------
+    # Panel 2 — file list with search
+    # ---------------------------------------------------------------------------
+
+    def _build_panel2(self, parent: tk.Frame) -> None:
+        panel = tk.Frame(parent, bg=C["surface2"], width=self.PANEL2_W)
+        panel.pack(side=tk.LEFT, fill=tk.Y)
+        panel.pack_propagate(False)
+
+        # thin left border
+        tk.Frame(panel, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y)
+
+        inner = tk.Frame(panel, bg=C["surface2"])
+        inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # header
+        hdr = tk.Frame(inner, bg=C["surface2"], height=40)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+        self._panel2_header = tk.Label(
+            hdr, text="Select a category",
+            bg=C["surface2"], fg=C["fg_dim"],
+            font=("Segoe UI", 9, "bold"), anchor="w"
+        )
+        self._panel2_header.pack(side=tk.LEFT, padx=12, pady=10)
+        self._panel2_count = tk.Label(
+            hdr, text="",
+            bg=C["surface2"], fg=C["accent2"],
+            font=("Segoe UI", 8)
+        )
+        self._panel2_count.pack(side=tk.RIGHT, padx=10)
+
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X)
+
+        # search bar
+        search_row = tk.Frame(inner, bg=C["surface2"], pady=6)
+        search_row.pack(fill=tk.X, padx=8)
+        tk.Label(search_row, text="\u2315", bg=C["surface2"], fg=C["fg_muted"],
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 4))
+        self._search_var = tk.StringVar()
+        self._search_var.trace_add("write", self._on_search_changed)
+        search_entry = tk.Entry(
+            search_row, textvariable=self._search_var,
+            bg=C["surface3"], fg=C["fg"],
+            insertbackground=C["accent"],
+            selectbackground=C["accent"], selectforeground="#fff",
+            relief="flat", borderwidth=0,
+            highlightthickness=1, highlightbackground=C["border"],
+            highlightcolor=C["accent2"],
+            font=("Segoe UI", 9)
+        )
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X)
+
+        # virtual file list
+        self._file_list = VirtualFileList(inner, on_select=self._on_file_selected)
+        self._file_list.pack(fill=tk.BOTH, expand=True)
+
+    # ---------------------------------------------------------------------------
+    # Panel 3 — placeholder info
+    # ---------------------------------------------------------------------------
+
+    def _build_panel3(self, parent: tk.Frame) -> None:
+        panel = tk.Frame(parent, bg=C["bg"])
+        panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # thin left border
+        tk.Frame(panel, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y)
+
+        inner = tk.Frame(panel, bg=C["bg"])
+        inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._info_panel = InfoPlaceholder(inner)
+        self._info_panel.pack(fill=tk.BOTH, expand=True)
+
+    # ===========================================================================
+    # Event handlers
+    # ===========================================================================
+
+    def _on_category_selected(self, cat_key: str) -> None:
+        self._active_category = cat_key
+        if self._prompt_index is None:
+            return
+        entries = self._prompt_index.entries_for_category(cat_key)
+        self._file_list.load(entries, self._search_var.get())
+
+        # update panel 2 header
+        if cat_key == "__root__":
+            label = "Root Files"
+        else:
+            label = cat_key.replace("_", " ").title()
+        self._panel2_header.config(text=label)
+        self._panel2_count.config(text=str(len(entries)))
+
+        # reset panel 3
+        self._selected_entry = None
+        self._info_panel.show_entry(None)
+        self.status.set(f"Category: {label}  \u2014  {len(entries)} files", "info")
+
+    def _on_file_selected(self, entry: PromptFileEntry) -> None:
+        self._selected_entry = entry
+        self._info_panel.show_entry(entry)
+        self.status.set(
+            f"{entry.display_name}  \u2014  {entry.type_tag}  \u2014  {entry.base_path}",
+            "info"
+        )
+
+    def _on_search_changed(self, *_) -> None:
+        self._file_list.filter(self._search_var.get())
+
+    def _refresh_campaigns(self) -> None:
+        self._init_data()
+        self.status.set("Campaigns refreshed", "ok")
+
+
+# ===========================================================================
+# Standalone entry point
+# ===========================================================================
+
+def main():
+    root = tk.Tk()
+    root.withdraw()
+    app = PromptManagementApp(root)
+    root.update_idletasks()
+    root.deiconify()
+    root.mainloop()
 
 
 if __name__ == "__main__":
