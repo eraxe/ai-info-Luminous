@@ -1743,6 +1743,230 @@ class PromptEditor(tk.Frame):
 
 
 # ===========================================================================
+# CollectionsDrawer — right-side slide-in panel
+# ===========================================================================
+
+COLL_ROW_H = 52
+COLL_DRAWER_W = 340
+
+COLL_COL_WIDTHS = {
+    "name":     120,
+    "date":      86,
+    "campaign":  70,
+    "scope":     42,
+    "files":     22,
+}
+
+
+class CollectionsDrawer(tk.Frame):
+    """
+    Toggleable right-side drawer that lists existing collection records.
+    Each row shows: name, date, campaign source, scope type, file count.
+    """
+
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=C["surface"], width=COLL_DRAWER_W, **kw)
+        self.pack_propagate(False)
+        self._records: list[dict] = []
+        self._hover_idx: Optional[int] = None
+        self._build()
+
+    # ---- public ----
+
+    def refresh(self) -> None:
+        """Reload collection records from disk and redraw the list."""
+        self._records = list_collections()
+        self._hover_idx = None
+        self._update_count()
+        self._redraw()
+
+    # ---- build ----
+
+    def _build(self) -> None:
+        # Header bar
+        hdr = tk.Frame(self, bg=C["surface2"], height=44)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+
+        tk.Label(
+            hdr, text="\u25a6 Collections",
+            bg=C["surface2"], fg=C["accent2"],
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.LEFT, padx=14, pady=10)
+
+        FlatButton(
+            hdr, text="\u21ba",
+            command=self.refresh,
+            bg=C["surface2"], fg=C["fg_muted"],
+            hover_bg=C["surface3"], hover_fg=C["accent2"],
+            font=("Segoe UI", 10), padx=8, pady=6,
+        ).pack(side=tk.RIGHT, padx=6, pady=4)
+
+        self._count_lbl = tk.Label(
+            hdr, text="",
+            bg=C["surface2"], fg=C["fg_muted"],
+            font=("Segoe UI", 8),
+        )
+        self._count_lbl.pack(side=tk.RIGHT, padx=4)
+
+        tk.Frame(self, bg=C["border"], height=1).pack(fill=tk.X)
+
+        # Column header row
+        col_hdr = tk.Frame(self, bg=C["surface3"], height=24)
+        col_hdr.pack(fill=tk.X)
+        col_hdr.pack_propagate(False)
+        for label, anchor in [
+            ("Name", "w"), ("Date", "w"), ("Campaign", "w"),
+            ("Scope", "center"), ("Files", "center"),
+        ]:
+            tk.Label(
+                col_hdr, text=label,
+                bg=C["surface3"], fg=C["fg_muted"],
+                font=("Segoe UI", 7, "bold"), anchor=anchor,
+            ).pack(side=tk.LEFT, padx=6)
+
+        tk.Frame(self, bg=C["border"], height=1).pack(fill=tk.X)
+
+        # Scrollable canvas list
+        list_frame = tk.Frame(self, bg=C["surface"])
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        self._canvas = tk.Canvas(list_frame, bg=C["surface"], highlightthickness=0, bd=0)
+        self._sb = tk.Scrollbar(
+            list_frame, orient="vertical", command=self._canvas.yview,
+            bg=C["scrollbar"], troughcolor=C["bg"], width=6, bd=0, relief="flat",
+        )
+        self._canvas.configure(yscrollcommand=self._sb.set)
+        self._sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._canvas.bind("<Configure>", self._on_resize)
+        self._canvas.bind("<MouseWheel>", lambda e: self._canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self._canvas.bind("<Button-4>", lambda e: self._canvas.yview_scroll(-1, "units"))
+        self._canvas.bind("<Button-5>", lambda e: self._canvas.yview_scroll(1, "units"))
+        self._canvas.bind("<Motion>", self._on_mouse_motion)
+        self._canvas.bind("<Leave>", self._on_mouse_leave)
+
+        self._canvas_width = COLL_DRAWER_W - 8
+
+    # ---- drawing ----
+
+    def _update_count(self) -> None:
+        n = len(self._records)
+        self._count_lbl.config(text=f"{n} collection{'s' if n != 1 else ''}")
+
+    def _update_scroll_region(self) -> None:
+        total_h = len(self._records) * COLL_ROW_H
+        self._canvas.configure(
+            scrollregion=(0, 0, self._canvas_width, max(total_h, 1))
+        )
+
+    def _on_resize(self, event) -> None:
+        self._canvas_width = event.width
+        self._update_scroll_region()
+        self._redraw()
+
+    def _redraw(self) -> None:
+        self._canvas.delete("all")
+        if not self._records:
+            self._canvas.create_text(
+                self._canvas_width // 2, 60,
+                text="No collections yet",
+                fill=C["fg_muted"], font=("Segoe UI", 9), anchor="center",
+            )
+            return
+        self._update_scroll_region()
+        top = self._canvas.canvasy(0)
+        bottom = top + max(self._canvas.winfo_height(), 1)
+        first = max(0, int(top // COLL_ROW_H))
+        last = min(len(self._records), int(bottom // COLL_ROW_H) + 2)
+        for i in range(first, last):
+            self._draw_row(i)
+
+    def _draw_row(self, idx: int) -> None:
+        if idx >= len(self._records):
+            return
+        rec = self._records[idx]
+        y0 = idx * COLL_ROW_H
+        y1 = y0 + COLL_ROW_H
+        w = self._canvas_width
+
+        bg = C["surface2"] if idx == self._hover_idx else C["surface"]
+        self._canvas.create_rectangle(0, y0, w, y1, fill=bg, outline="")
+        self._canvas.create_line(0, y1 - 1, w, y1 - 1, fill=C["border"])
+
+        # Left accent bar on hover
+        if idx == self._hover_idx:
+            self._canvas.create_rectangle(0, y0, 2, y1, fill=C["accent"], outline="")
+
+        # Name (line 1)
+        name = rec.get("name", "—")
+        if len(name) > 18:
+            name = name[:17] + "\u2026"
+        self._canvas.create_text(
+            10, y0 + 14,
+            text=name, fill=C["fg"], font=("Segoe UI", 9, "bold"), anchor="w",
+        )
+
+        # Date (line 2, dimmed)
+        raw_date = rec.get("created_at", "")
+        date_str = raw_date[:10] if raw_date else "—"
+        self._canvas.create_text(
+            10, y0 + 32,
+            text=date_str, fill=C["fg_muted"], font=("Segoe UI", 8), anchor="w",
+        )
+
+        # Campaign
+        campaign = rec.get("campaign_id", "—")
+        if len(campaign) > 12:
+            campaign = campaign[:11] + "\u2026"
+        self._canvas.create_text(
+            140, y0 + COLL_ROW_H // 2,
+            text=campaign, fill=C["fg_dim"], font=("Segoe UI", 8), anchor="w",
+        )
+
+        # Scope badge
+        scope = rec.get("scope_type", "?")
+        scope_color = {
+            "file": C["accent2"],
+            "category": C["accent3"],
+            "campaign": C["green"],
+        }.get(scope, C["fg_muted"])
+        self._canvas.create_text(
+            240, y0 + COLL_ROW_H // 2,
+            text=scope[:3].upper(), fill=scope_color,
+            font=("Segoe UI", 7, "bold"), anchor="center",
+        )
+
+        # File count
+        fc = rec.get("file_count", 0)
+        self._canvas.create_text(
+            w - 16, y0 + COLL_ROW_H // 2,
+            text=str(fc), fill=C["fg_dim"],
+            font=("Segoe UI", 9), anchor="center",
+        )
+
+    def _row_at_y(self, canvas_y: float) -> Optional[int]:
+        idx = int(canvas_y // COLL_ROW_H)
+        return idx if 0 <= idx < len(self._records) else None
+
+    def _on_mouse_motion(self, event) -> None:
+        cy = self._canvas.canvasy(event.y)
+        new_hover = self._row_at_y(cy)
+        if new_hover != self._hover_idx:
+            old, self._hover_idx = self._hover_idx, new_hover
+            if old is not None:
+                self._draw_row(old)
+            if new_hover is not None:
+                self._draw_row(new_hover)
+
+    def _on_mouse_leave(self, event=None) -> None:
+        old, self._hover_idx = self._hover_idx, None
+        if old is not None:
+            self._draw_row(old)
+
+
+# ===========================================================================
 # PromptManagementApp
 # ===========================================================================
 
@@ -1765,6 +1989,7 @@ class PromptManagementApp:
         self._prompt_index: Optional[PromptIndex] = None
         self._active_category: Optional[str] = None
         self._selected_entry: Optional[PromptFileEntry] = None
+        self._collections_open: bool = False
 
         root.title("Prompt Management")
         root.overrideredirect(True)
@@ -1893,15 +2118,35 @@ class PromptManagementApp:
         bar = CustomTitleBar(self._frame, self, "Prompt Management")
         bar.pack(fill=tk.X)
 
+        # Toolbar row (below title bar, above body)
+        self._toolbar = tk.Frame(self._frame, bg=C["surface"], height=34)
+        self._toolbar.pack(fill=tk.X)
+        self._toolbar.pack_propagate(False)
+        tk.Frame(self._toolbar, bg=C["border"], height=1).pack(side=tk.BOTTOM, fill=tk.X)
+        self._build_toolbar(self._toolbar)
+
         body = tk.Frame(self._frame, bg=C["bg"])
         body.pack(fill=tk.BOTH, expand=True)
 
         self._build_panel1(body)
         self._build_panel2(body)
         self._build_panel3(body)
+        self._build_collections_drawer(body)
 
         self.status = StatusBar(self._frame)
         self.status.pack(fill=tk.X, side=tk.BOTTOM)
+
+    def _build_toolbar(self, toolbar: tk.Frame) -> None:
+        """Populate the secondary toolbar row with action buttons."""
+        self._collections_btn = FlatButton(
+            toolbar,
+            text="\u25a6 Collections",
+            command=self._toggle_collections_drawer,
+            bg=C["surface"], fg=C["fg_muted"],
+            hover_bg=C["surface2"], hover_fg=C["accent2"],
+            font=("Segoe UI", 8, "bold"), padx=12, pady=6,
+        )
+        self._collections_btn.pack(side=tk.LEFT, fill=tk.Y)
 
     def _build_panel1(self, parent: tk.Frame) -> None:
         panel = tk.Frame(parent, bg=C["surface"], width=self.PANEL1_W)
@@ -2005,89 +2250,4 @@ class PromptManagementApp:
         tk.Frame(inner, bg=C["border"], height=1).pack(fill=tk.X)
 
         self._file_list = VirtualFileList(inner, on_select=self._on_file_selected)
-        self._file_list.pack(fill=tk.BOTH, expand=True)
-
-    def _build_panel3(self, parent: tk.Frame) -> None:
-        panel = tk.Frame(parent, bg=C["bg"])
-        panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        tk.Frame(panel, bg=C["border"], width=1).pack(side=tk.LEFT, fill=tk.Y)
-
-        inner = tk.Frame(panel, bg=C["bg"])
-        inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self._editor = PromptEditor(
-            inner,
-            get_readonly=self._is_readonly,
-            get_prompts_root=self._get_prompts_root,
-            on_status=lambda msg, lvl="ok": self.status.set(msg, lvl)
-        )
-        self._editor.pack(fill=tk.BOTH, expand=True)
-
-    # ---- event handlers ----
-
-    def _on_category_selected(self, cat_key: str) -> None:
-        if self._editor.has_unsaved:
-            ans = tk.messagebox.askyesno(
-                "Unsaved Changes",
-                "You have unsaved changes.\nSwitch category and discard them?",
-                parent=self.root
-            )
-            if not ans:
-                self._cat_tree.set_active(self._active_category)
-                return
-
-        self._active_category = cat_key
-        if self._prompt_index is None:
-            return
-        entries = self._prompt_index.entries_for_category(cat_key)
-        self._file_list.load(entries, self._search_var.get())
-
-        label = "Root Files" if cat_key == "__root__" else cat_key.replace("_", " ").title()
-        self._panel2_header.config(text=label)
-        self._panel2_count.config(text=str(len(entries)))
-
-        self._selected_entry = None
-        self._editor.clear()
-        self.status.set(f"Category: {label}  \u2014  {len(entries)} files", "info")
-
-    def _on_file_selected(self, entry: PromptFileEntry) -> None:
-        if self._editor.has_unsaved:
-            ans = tk.messagebox.askyesno(
-                "Unsaved Changes",
-                "You have unsaved changes.\nLoad new file and discard them?",
-                parent=self.root
-            )
-            if not ans:
-                return
-
-        self._selected_entry = entry
-        self._editor.load_entry(entry)
-        self.status.set(
-            f"{entry.display_name}  \u2014  {entry.type_tag}  \u2014  {entry.base_path}",
-            "info"
-        )
-
-    def _on_search_changed(self, *_) -> None:
-        self._file_list.filter(self._search_var.get())
-
-    def _refresh_campaigns(self) -> None:
-        self._init_data()
-        self.status.set("Campaigns refreshed", "ok")
-
-
-# ===========================================================================
-# Standalone entry point
-# ===========================================================================
-
-def main():
-    root = tk.Tk()
-    root.withdraw()
-    app = PromptManagementApp(root)
-    root.update_idletasks()
-    root.deiconify()
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
+      
