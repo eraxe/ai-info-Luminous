@@ -1,13 +1,15 @@
+#!/usr/bin/env python3
 """
 widgets.py — Reusable tkinter widgets for Luminous AI
 =====================================================
 
-Provides three drop-in components that share the dark-mode palette
+Provides four drop-in components that share the dark-mode palette
 defined in colors.py:
 
-    FlatButton   — Ghost/text-style button; subtle hover, no background fill.
-    AccentButton — Solid filled button with an accent colour.
-    StatusBar    — Horizontal status-bar widget pinned to a window's bottom edge.
+    FlatButton      — Ghost/text-style button; subtle hover, no background fill.
+    AccentButton    — Solid filled button with an accent colour.
+    StatusBar       — Horizontal status-bar widget pinned to a window's bottom edge.
+    CustomTitleBar  — Frameless title bar shared by every Luminous window.
 
 All widgets import C from colors so they stay in sync with the rest of
 the app automatically.  Pass a custom `colors` dict to override
@@ -15,7 +17,7 @@ individual colours without touching the global palette.
 
 Usage example
 -------------
-    from widgets import FlatButton, AccentButton, StatusBar
+    from widgets import FlatButton, AccentButton, StatusBar, CustomTitleBar
 
     root = tk.Tk()
 
@@ -254,7 +256,7 @@ class AccentButton(tk.Label):
 
     @staticmethod
     def _lighten(hex_color: str, factor: float = 0.15) -> str:
-        """Return *hex_color* lightened by *factor* (0–1)."""
+        """Return *hex_color* lightened by *factor* (0-1)."""
         h = hex_color.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         r = min(255, int(r + (255 - r) * factor))
@@ -264,7 +266,7 @@ class AccentButton(tk.Label):
 
     @staticmethod
     def _darken(hex_color: str, factor: float = 0.20) -> str:
-        """Return *hex_color* darkened by *factor* (0–1)."""
+        """Return *hex_color* darkened by *factor* (0-1)."""
         h = hex_color.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         r = max(0, int(r * (1 - factor)))
@@ -319,43 +321,26 @@ class AccentButton(tk.Label):
 class StatusBar(tk.Frame):
     """Horizontal status bar pinned to the bottom of a window.
 
-    Displays a short status message on the left and an optional
-    right-side segment (e.g. version string or mode indicator).
-    A 1-pixel top border separates the bar from the content area.
-
-    The bar auto-clears temporary messages after a configurable
-    timeout (``auto_clear_ms``, default 5000 ms; set to 0 to disable).
+    Shows a primary message on the left and an optional auxiliary label
+    on the right.  Messages auto-clear after ``auto_clear_ms``
+    milliseconds (default 5 s).  Call ``set()`` with a ``level`` keyword
+    to colour-code the message.
 
     Parameters
     ----------
     parent:
-        Tkinter parent widget (usually the root window or a Frame).
+        Tkinter parent widget (usually the root window).
     height:
         Bar height in pixels.  Defaults to 24.
     font:
-        Tkinter font tuple for both labels.  Defaults to ("Segoe UI", 8).
+        Tkinter font tuple.  Defaults to ("Segoe UI", 8).
     auto_clear_ms:
-        Milliseconds before a message set via ``set()`` is
-        automatically cleared back to the idle text.  Pass ``0`` to
-        keep the message indefinitely.  Defaults to 5000.
+        Time in milliseconds before the status text resets to
+        ``idle_text``.  Pass 0 to disable auto-clear.  Defaults to 5000.
     idle_text:
-        Text shown when no status message is active.
-        Defaults to "Ready".
+        Text shown when no message is active.  Defaults to "Ready".
     colors:
         Optional dict of colour overrides.
-
-    Public API
-    ----------
-    .set(message, *, level="info")
-        Set the status message.  *level* controls the text colour:
-        "info"    → C["fg_dim"]   (default, dimmed white)
-        "success" → C["green"]
-        "warning" → C["accent3"]  (amber)
-        "error"   → C["red"]
-    .set_right(text)
-        Update the right-side label.
-    .clear()
-        Reset to the idle text immediately.
     """
 
     _LEVEL_COLORS = {
@@ -456,3 +441,184 @@ class StatusBar(tk.Frame):
         self._clear_job = None
         self._left_var.set(self._idle_text)
         self._left_lbl.config(fg=self._palette["fg_dim"])
+
+
+# ---------------------------------------------------------------------------
+# CustomTitleBar
+# ---------------------------------------------------------------------------
+
+class CustomTitleBar(tk.Frame):
+    """Canonical frameless title bar shared by every Luminous window.
+
+    Replaces the three divergent inline copies that previously lived in
+    ``main.py``, ``about.py``, and ``ai_characters.py``.
+
+    Fixes consolidated from all three variants:
+    - ``_norm_geo`` guard: never crashes on first maximize (was broken in
+      ``main.py`` and ``about.py`` which read ``self._norm_geo`` without
+      an ``hasattr`` check).
+    - Windows-aware minimize: ``overrideredirect`` trick from ``main.py``
+      preserved and isolated so it does not affect other platforms.
+    - Drag guard: move is silently ignored while the window is maximised
+      (from ``ai_characters.py``).
+    - Double-click to toggle maximize (from ``ai_characters.py``).
+    - Window controls use ``FlatButton`` for consistent hover styling
+      (from ``ai_characters.py``).
+
+    Parameters
+    ----------
+    parent:
+        The widget that receives this bar (usually the root window itself).
+    root:
+        The ``tk.Tk`` / ``tk.Toplevel`` whose geometry and state are
+        controlled.
+    title:
+        Text shown in the title area.
+    on_close:
+        Callable invoked when the ✕ button is clicked.  Defaults to
+        ``root.destroy``.
+    on_back:
+        If provided, a "◆ Hub" back-button is rendered on the far left
+        and calls this callable when clicked.  Leave ``None`` to omit.
+    grip_widget:
+        Optional resize-grip widget that is hidden while the window is
+        maximised and re-shown on restore.
+    colors:
+        Optional dict of colour overrides merged on top of ``C``.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        root: tk.Misc,
+        title: str = "",
+        on_close: Optional[Callable] = None,
+        on_back: Optional[Callable] = None,
+        grip_widget: Optional[tk.Widget] = None,
+        colors: Optional[dict] = None,
+    ):
+        palette = _merge(C, colors)
+        super().__init__(parent, bg=palette["bg"], height=36)
+        self.pack_propagate(False)
+
+        self._root      = root
+        self._palette   = palette
+        self._is_max    = False
+        self._norm_geo  = ""          # set on first maximize
+        self._grip      = grip_widget
+        self._on_close  = on_close or root.destroy
+
+        # ── optional back button ────────────────────────────────────────
+        if on_back:
+            back = tk.Label(
+                self, text="\u2b21 Hub",
+                bg=palette["bg"], fg=palette["fg_muted"],
+                font=("Segoe UI", 8), padx=10, pady=6, cursor="hand2",
+            )
+            back.pack(side=tk.LEFT)
+            back.bind("<Enter>", lambda e: back.config(fg=palette["accent"]))
+            back.bind("<Leave>", lambda e: back.config(fg=palette["fg_muted"]))
+            back.bind("<Button-1>", lambda e: on_back())
+            tk.Frame(self, bg=palette["border"], width=1).pack(
+                side=tk.LEFT, fill=tk.Y, padx=(0, 8), pady=6
+            )
+
+        # ── title label ─────────────────────────────────────────────────
+        lbl = tk.Label(
+            self, text=f" {title}",
+            bg=palette["bg"], fg=palette["fg_dim"],
+            font=("Segoe UI", 9, "bold"),
+        )
+        lbl.pack(side=tk.LEFT, padx=(4 if on_back else 12))
+
+        # Drag and double-click bindings on both the bar frame and the label
+        for w in (self, lbl):
+            w.bind("<ButtonPress-1>",   self._start_move)
+            w.bind("<B1-Motion>",       self._do_move)
+            w.bind("<Double-Button-1>", lambda e: self._toggle_max())
+
+        # ── window control buttons (right-to-left pack order) ───────────
+        btns = tk.Frame(self, bg=palette["bg"])
+        btns.pack(side=tk.RIGHT, fill=tk.Y)
+
+        FlatButton(
+            btns, text="\u2715", command=self._close,
+            bg=palette["bg"], bg_hover=palette["red"],
+            fg=palette["fg"], fg_hover="#ffffff",
+            padx=14, pady=6,
+        ).pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._max_btn = FlatButton(
+            btns, text="\u2610", command=self._toggle_max,
+            bg=palette["bg"], bg_hover=palette["surface3"],
+            fg=palette["fg"], fg_hover=palette["fg"],
+            padx=14, pady=6,
+        )
+        self._max_btn.pack(side=tk.RIGHT, fill=tk.Y)
+
+        FlatButton(
+            btns, text="\u2014", command=self._minimize,
+            bg=palette["bg"], bg_hover=palette["surface3"],
+            fg=palette["fg"], fg_hover=palette["fg"],
+            padx=14, pady=6,
+        ).pack(side=tk.RIGHT, fill=tk.Y)
+
+    # ------------------------------------------------------------------
+    # Drag-to-move
+    # ------------------------------------------------------------------
+
+    def _start_move(self, event: tk.Event) -> None:
+        if self._is_max:
+            return
+        self._root._drag_x = event.x  # type: ignore[attr-defined]
+        self._root._drag_y = event.y  # type: ignore[attr-defined]
+
+    def _do_move(self, event: tk.Event) -> None:
+        if self._is_max:
+            return
+        dx = event.x - getattr(self._root, "_drag_x", event.x)
+        dy = event.y - getattr(self._root, "_drag_y", event.y)
+        x  = self._root.winfo_x() + dx
+        y  = self._root.winfo_y() + dy
+        self._root.geometry(f"+{x}+{y}")
+
+    # ------------------------------------------------------------------
+    # Window controls
+    # ------------------------------------------------------------------
+
+    def _minimize(self) -> None:
+        import platform as _platform
+        if _platform.system() == "Windows":
+            self._root.overrideredirect(False)
+            self._root.iconify()
+            self._root.bind(
+                "<Map>",
+                lambda e: (
+                    self._root.overrideredirect(True),
+                    self._root.unbind("<Map>"),
+                ),
+            )
+        else:
+            self._root.iconify()
+
+    def _toggle_max(self) -> None:
+        if self._is_max:
+            # Restore — only geometry if we have a saved value
+            if self._norm_geo:
+                self._root.geometry(self._norm_geo)
+            self._is_max = False
+            self._max_btn.set_text("\u2610")
+            if self._grip:
+                self._grip.place(relx=1.0, rely=1.0, anchor="se")
+        else:
+            self._norm_geo = self._root.geometry()
+            sw = self._root.winfo_screenwidth()
+            sh = self._root.winfo_screenheight()
+            self._root.geometry(f"{sw}x{sh}+0+0")
+            self._is_max = True
+            self._max_btn.set_text("\u2750")
+            if self._grip:
+                self._grip.place_forget()
+
+    def _close(self) -> None:
+        self._on_close()

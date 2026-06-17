@@ -5,9 +5,9 @@ Entry point: shows hub with section buttons. Sections open as in-process windows
 """
 import tkinter as tk
 import tkinter.messagebox as mb
-import platform
 import sys
 import os
+from widgets import CustomTitleBar
 
 C = {
     "bg": "#0d0f14",
@@ -32,67 +32,6 @@ SECTION_CLASS_MAP = {
     "settings.py": "SettingsApp",
     "about.py": "AboutApp",
 }
-
-
-class CustomTitleBar(tk.Frame):
-    def __init__(self, parent, root, title=""):
-        super().__init__(parent, bg=C["bg"], height=36)
-        self.pack_propagate(False)
-        self._root = root
-        self._is_max = False
-        self.bind("<ButtonPress-1>", self._start_move)
-        self.bind("<B1-Motion>", self._do_move)
-        lbl = tk.Label(self, text=f" {title}", bg=C["bg"], fg=C["fg_dim"],
-                       font=("Segoe UI", 9, "bold"))
-        lbl.pack(side=tk.LEFT, padx=12)
-        lbl.bind("<ButtonPress-1>", self._start_move)
-        lbl.bind("<B1-Motion>", self._do_move)
-        btns = tk.Frame(self, bg=C["bg"])
-        btns.pack(side=tk.RIGHT, fill=tk.Y)
-        self._mk_btn(btns, "\u2014", self._minimize, C["bg"])
-        self._max_btn = self._mk_btn(btns, "\u2610", self._toggle_max, C["bg"])
-        self._mk_btn(btns, "\u2715", root.destroy, C["bg"], hover_bg=C["red"])
-
-    def _mk_btn(self, parent, text, cmd, bg, hover_bg=None):
-        hbg = hover_bg or C["surface3"]
-        lbl = tk.Label(parent, text=text, bg=bg, fg=C["fg"],
-                       font=("Segoe UI", 9), padx=14, pady=6, cursor="hand2")
-        lbl.pack(side=tk.LEFT, fill=tk.Y)
-        lbl.bind("<Enter>", lambda e: lbl.config(bg=hbg))
-        lbl.bind("<Leave>", lambda e: lbl.config(bg=bg))
-        lbl.bind("<Button-1>", lambda e: cmd())
-        return lbl
-
-    def _start_move(self, e):
-        if not self._is_max:
-            self._root.x, self._root.y = e.x, e.y
-
-    def _do_move(self, e):
-        if not self._is_max:
-            x = self._root.winfo_x() + e.x - self._root.x
-            y = self._root.winfo_y() + e.y - self._root.y
-            self._root.geometry(f"+{x}+{y}")
-
-    def _minimize(self):
-        if platform.system() == "Windows":
-            self._root.overrideredirect(False)
-            self._root.iconify()
-            self._root.bind("<Map>", lambda e: (
-                self._root.overrideredirect(True), self._root.unbind("<Map>")))
-        else:
-            self._root.iconify()
-
-    def _toggle_max(self):
-        if self._is_max:
-            self._root.geometry(self._norm_geo)
-            self._is_max = False
-            self._max_btn.config(text="\u2610")
-        else:
-            self._norm_geo = self._root.geometry()
-            sw, sh = self._root.winfo_screenwidth(), self._root.winfo_screenheight()
-            self._root.geometry(f"{sw}x{sh}+0+0")
-            self._is_max = True
-            self._max_btn.config(text="\u2750")
 
 
 class NavCard(tk.Frame):
@@ -199,15 +138,16 @@ class LuminousHub:
         y = (sh - 520) // 2
         root.geometry(f"780x520+{x}+{y}")
 
-        bar = CustomTitleBar(root, root, title="Luminous AI \u2014 Hub")
+        bar = CustomTitleBar(root, root, title="Luminous AI")
         bar.pack(fill=tk.X)
 
         header = tk.Frame(root, bg=C["bg"])
-        header.pack(fill=tk.X, padx=32, pady=(24, 8))
-        tk.Label(header, text="Luminous AI", bg=C["bg"], fg=C["fg"],
-                 font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        tk.Label(header, text="Select a section to get started", bg=C["bg"], fg=C["fg_dim"],
-                 font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
+        header.pack(fill=tk.X, padx=32, pady=(20, 8))
+        tk.Label(header, text="LUMINOUS", bg=C["bg"], fg=C["accent"],
+                 font=("Segoe UI", 11, "bold"), letter_spacing=4 if False else 0
+                 ).pack(side=tk.LEFT)
+        tk.Label(header, text=" AI", bg=C["bg"], fg=C["fg_dim"],
+                 font=("Segoe UI", 11)).pack(side=tk.LEFT)
 
         tk.Frame(root, bg=C["border"], height=1).pack(fill=tk.X, padx=32, pady=(8, 20))
 
