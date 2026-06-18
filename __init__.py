@@ -4,7 +4,7 @@ Re-exports all public symbols so callers can simply do:
     from luminous import C, ANSI, ColorScheme
 """
 
-from .colors import C, ANSI, ColorScheme
+from colors import C, ANSI, ColorScheme
 
 __all__ = [
     "C",
