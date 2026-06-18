@@ -6,11 +6,19 @@ JSON form editor, paired active-file toggle
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# ── standalone import fix ──────────────────────────────────────────────────────
+# Ensures sibling modules (colors, widgets, etc.) are resolvable whether this
+# file is run directly (`python prompt_management.py`) or via `python -m`.
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import tkinter as tk
 import tkinter.messagebox
 import tkinter.ttk as ttk
 from datetime import datetime
-from pathlib import Path
 from typing import Callable, Optional
 
 # ── local imports ─────────────────────────────────────────────────────────────
