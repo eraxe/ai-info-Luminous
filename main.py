@@ -25,6 +25,11 @@ C = {
     "border": "#252a38",
 }
 
+# Ensure the repo directory is always on sys.path so sibling imports work
+_repo_dir = os.path.dirname(os.path.abspath(__file__))
+if _repo_dir not in sys.path:
+    sys.path.insert(0, _repo_dir)
+
 # Map script filename → app class name
 SECTION_CLASS_MAP = {
     "ai_characters.py": "NPCViewerApp",
@@ -189,6 +194,13 @@ class LuminousHub:
         class_name = SECTION_CLASS_MAP.get(script_name)
         try:
             import importlib.util
+
+            # Ensure the module's directory is on sys.path so its
+            # absolute sibling imports (e.g. `from colors import C`) resolve.
+            module_dir = os.path.dirname(os.path.abspath(path))
+            if module_dir not in sys.path:
+                sys.path.insert(0, module_dir)
+
             spec = importlib.util.spec_from_file_location("section_module", path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
