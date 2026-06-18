@@ -13,17 +13,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-# ── local imports (assumed present in the package) ────────────────────────────
-from .colors import C
-from .widgets import FlatButton, AccentButton, StatusBar
-from .prompt_index import PromptIndex, PromptFileEntry
-from .prompt_editor import PromptEditor
-from .collections_drawer import CollectionsDrawer
-from .category_tree import CategoryTree
-from .file_list import VirtualFileList
-from .snapshot import snapshot_from_file, snapshot_from_category, snapshot_from_campaign
-from .campaigns import discover_campaigns
-from .save_manager import SaveManager
+# ── local imports ─────────────────────────────────────────────────────────────
+from colors import C
+from widgets import FlatButton, AccentButton, StatusBar
+from prompt_index import PromptIndex, PromptFileEntry
+from prompt_editor import PromptEditor
+from collections_drawer import CollectionsDrawer
+from category_tree import CategoryTree
+from file_list import VirtualFileList
+from snapshot import snapshot_from_file, snapshot_from_category, snapshot_from_campaign
+from campaigns import discover_campaigns
+from save_manager import SaveManager
 
 
 class PromptManagementApp:
