@@ -73,12 +73,12 @@ class FlatButton(tk.Label):
         Callable invoked on click.  Defaults to None (no-op).
     fg:
         Normal foreground colour.  Defaults to C["fg_dim"].
-    fg_hover:
+    fg_hover / hover_fg:
         Foreground colour while the pointer is inside.
-        Defaults to C["fg"].
-    bg_hover:
+        Defaults to C["fg"].  Both spellings accepted.
+    bg_hover / hover_bg:
         Background colour while the pointer is inside.
-        Defaults to C["surface2"].
+        Defaults to C["surface2"].  Both spellings accepted.
     bg_active:
         Background colour while the mouse button is held down.
         Defaults to C["surface3"].
@@ -107,6 +107,15 @@ class FlatButton(tk.Label):
         **kw,
     ):
         palette = _merge(C, colors)
+        # Support both spellings: hover_bg/hover_fg (legacy) and bg_hover/fg_hover (canonical)
+        if bg_hover is None and "hover_bg" in kw:
+            bg_hover = kw.pop("hover_bg")
+        else:
+            kw.pop("hover_bg", None)
+        if fg_hover is None and "hover_fg" in kw:
+            fg_hover = kw.pop("hover_fg")
+        else:
+            kw.pop("hover_fg", None)
         self._fg_normal = fg or palette["fg_dim"]
         self._fg_hover  = fg_hover  or palette["fg"]
         self._bg_normal = kw.pop("bg", palette["bg"])
