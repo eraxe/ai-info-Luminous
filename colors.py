@@ -13,23 +13,24 @@ from dataclasses import dataclass, field
 # Tk / GUI hex palette  (mirrors the `C` dict in main.py exactly)
 # ---------------------------------------------------------------------------
 C: dict[str, str] = {
-    # ── Backgrounds ──────────────────────────────────────────────────────
+    # ── Backgrounds ───────────────────────────────────────────────────────────
     "bg":          "#0d0f14",   # deepest background
     "surface":     "#13161e",   # card / panel surface
     "surface2":    "#1a1e29",   # hover / elevated surface
     "surface3":    "#212537",   # pressed / deepest surface layer
-    # ── Foreground ───────────────────────────────────────────────────────
+    # ── Foreground ───────────────────────────────────────────────────────────
     "fg":          "#e2e8f0",   # primary text
     "fg_dim":      "#7b879e",   # secondary / label text
     "fg_muted":    "#445069",   # tertiary / placeholder text
-    # ── Accents ──────────────────────────────────────────────────────────
+    "fg_faint":    "#2d3a4f",   # quaternary / decorative text (barely visible)
+    # ── Accents ─────────────────────────────────────────────────────────────
     "accent":      "#7c6af7",   # purple — AI Characters
     "accent2":     "#38bdf8",   # sky blue — Prompt Management
     "accent3":     "#f59e0b",   # amber — Settings
-    # ── Semantic ─────────────────────────────────────────────────────────
+    # ── Semantic ─────────────────────────────────────────────────────────────
     "green":       "#22d3a0",   # success / About & Updates
     "red":         "#f87171",   # error / close button hover
-    # ── Chrome ───────────────────────────────────────────────────────────
+    # ── Chrome ──────────────────────────────────────────────────────────────
     "border":      "#252a38",   # widget borders / dividers
 }
 
@@ -40,7 +41,7 @@ class ANSI:
     """ANSI SGR escape sequences."""
     RESET    = "\033[0m"
 
-    # ── Styles ───────────────────────────────────────────────────────────
+    # ── Styles ──────────────────────────────────────────────────────────────
     BOLD      = "\033[1m"
     DIM       = "\033[2m"
     ITALIC    = "\033[3m"
@@ -49,7 +50,7 @@ class ANSI:
     REVERSE   = "\033[7m"
     STRIKE    = "\033[9m"
 
-    # ── Standard foreground colors ───────────────────────────────────────
+    # ── Standard foreground colors ───────────────────────────────────────────
     BLACK   = "\033[30m"
     RED     = "\033[31m"
     GREEN   = "\033[32m"
@@ -59,7 +60,7 @@ class ANSI:
     CYAN    = "\033[36m"
     WHITE   = "\033[37m"
 
-    # ── Bright foreground colors ─────────────────────────────────────────
+    # ── Bright foreground colors ─────────────────────────────────────────────
     BRIGHT_BLACK   = "\033[90m"
     BRIGHT_RED     = "\033[91m"
     BRIGHT_GREEN   = "\033[92m"
@@ -69,7 +70,7 @@ class ANSI:
     BRIGHT_CYAN    = "\033[96m"
     BRIGHT_WHITE   = "\033[97m"
 
-    # ── Standard background colors ───────────────────────────────────────
+    # ── Standard background colors ─────────────────────────────────────────────
     BG_BLACK   = "\033[40m"
     BG_RED     = "\033[41m"
     BG_GREEN   = "\033[42m"
@@ -79,7 +80,7 @@ class ANSI:
     BG_CYAN    = "\033[46m"
     BG_WHITE   = "\033[47m"
 
-    # ── Luminous-themed semantic shortcuts ───────────────────────────────
+    # ── Luminous-themed semantic shortcuts ─────────────────────────────────────
     # Map to the closest ANSI equivalent of the GUI palette
     ACCENT  = "\033[38;2;124;106;247m"  # #7c6af7 — purple accent
     ACCENT2 = "\033[38;2;56;189;248m"   # #38bdf8 — sky blue
