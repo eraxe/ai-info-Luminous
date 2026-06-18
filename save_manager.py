@@ -15,12 +15,19 @@ State file location::
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path as _Path
+
+# ── standalone import fix ──────────────────────────────────────────────────────
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
 import json
 import os
 from pathlib import Path
 from typing import Any
 
-from .settings import SettingsManager
+from settings import SettingsManager
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
