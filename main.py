@@ -144,8 +144,7 @@ class LuminousHub:
         header = tk.Frame(root, bg=C["bg"])
         header.pack(fill=tk.X, padx=32, pady=(20, 8))
         tk.Label(header, text="LUMINOUS", bg=C["bg"], fg=C["accent"],
-                 font=("Segoe UI", 11, "bold"), letter_spacing=4 if False else 0
-                 ).pack(side=tk.LEFT)
+                 font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
         tk.Label(header, text=" AI", bg=C["bg"], fg=C["fg_dim"],
                  font=("Segoe UI", 11)).pack(side=tk.LEFT)
 
