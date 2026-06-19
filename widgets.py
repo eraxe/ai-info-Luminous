@@ -275,7 +275,7 @@ class AccentButton(tk.Label):
 
     @staticmethod
     def _darken(hex_color: str, factor: float = 0.20) -> str:
-        """Return *hex_color* darkened by *factor* (0-1)."""
+    	"""Return *hex_color* darkened by *factor* (0-1)."""
         h = hex_color.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         r = max(0, int(r * (1 - factor)))
@@ -332,7 +332,7 @@ class StatusBar(tk.Frame):
 
     Shows a primary message on the left and an optional auxiliary label
     on the right.  Messages auto-clear after ``auto_clear_ms``
-    milliseconds (default 5 s).  Call ``set()`` with a ``level`` keyword
+    milliseconds (default 5 s).  Call ``set()`` with a ``level`` argument
     to colour-code the message.
 
     Parameters
@@ -354,6 +354,7 @@ class StatusBar(tk.Frame):
 
     _LEVEL_COLORS = {
         "info":    "fg_dim",
+        "ok":      "green",   # alias for "success"
         "success": "green",
         "warning": "accent3",
         "error":   "red",
@@ -416,7 +417,7 @@ class StatusBar(tk.Frame):
     # Public API
     # ------------------------------------------------------------------
 
-    def set(self, message: str, *, level: str = "info") -> None:
+    def set(self, message: str, level: str = "info") -> None:
         """Display *message* in the status bar.
 
         Parameters
@@ -424,7 +425,8 @@ class StatusBar(tk.Frame):
         message:
             The text to display.
         level:
-            Colour level — one of "info", "success", "warning", "error".
+            Colour level — one of "ok", "info", "success", "warning", "error".
+            May be passed positionally or as a keyword argument.
         """
         color_key = self._LEVEL_COLORS.get(level, "fg_dim")
         fg = self._palette[color_key]
