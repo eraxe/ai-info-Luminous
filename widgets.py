@@ -275,7 +275,7 @@ class AccentButton(tk.Label):
 
     @staticmethod
     def _darken(hex_color: str, factor: float = 0.20) -> str:
-    	"""Return *hex_color* darkened by *factor* (0-1)."""
+        """Return *hex_color* darkened by *factor* (0-1)."""
         h = hex_color.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         r = max(0, int(r * (1 - factor)))
@@ -614,7 +614,6 @@ class CustomTitleBar(tk.Frame):
 
     def _toggle_max(self) -> None:
         if self._is_max:
-            # Restore — only geometry if we have a saved value
             if self._norm_geo:
                 self._root.geometry(self._norm_geo)
             self._is_max = False
